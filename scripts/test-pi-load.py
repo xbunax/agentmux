@@ -15,8 +15,12 @@ assert pi, "Install Pi first"
 with tempfile.TemporaryDirectory(prefix="agentmux-pi-load-") as temporary:
     root = Path(temporary).resolve()
     env = dict(os.environ, PI_CODING_AGENT_DIR=str(root / "pi"), AGENTMUX_BRIDGE_DIR=str(root / "bridges"))
+    # Match the documented already-running installation: load a symlink and
+    # resolve its support module from the original source directory.
+    entry = root / "agentmux.ts"
+    entry.symlink_to(repo / "integrations/pi/agentmux.ts")
     with (root / "output.log").open("w+") as output:
-        process = subprocess.Popen([pi, "--mode", "rpc", "-e", str(repo / "integrations/pi/agentmux.ts")], cwd=root, env=env, stdin=subprocess.PIPE, stdout=output, stderr=output, text=True)
+        process = subprocess.Popen([pi, "--mode", "rpc", "-e", str(entry)], cwd=root, env=env, stdin=subprocess.PIPE, stdout=output, stderr=output, text=True)
         try:
             manifest_path = root / "bridges" / f"pi-{process.pid}.json"
             for _ in range(200):

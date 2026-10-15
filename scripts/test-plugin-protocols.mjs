@@ -1,6 +1,6 @@
 // Test the shipped plugins with official MCP SDK and a deterministic Codex proxy fixture.
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, readdir, rm, chmod } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, readdir, rm, chmod, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -11,13 +11,13 @@ import { z } from '../dist/plugins/agentmux-claude/node_modules/zod/index.js';
 
 const repo = resolve(import.meta.dirname, '..');
 const temporary = await mkdtemp(join(tmpdir(), 'agentmux-plugin-protocol-'));
-const cwd = await import('node:fs/promises').then(async fs => { const path=join(temporary,'project'); await fs.mkdir(path); return path; });
+const cwd = await import('node:fs/promises').then(async fs => { const path=join(temporary,'project'); await fs.mkdir(path); return realpath(path); });
 const directory = join(temporary, 'bridges');
 const env = { ...process.env, AGENTMUX_BRIDGE_DIR: directory, CLAUDE_CONFIG_DIR: join(temporary, 'claude-home'), AGENTMUX_CLAUDE_CHANNEL: '1' };
 const children = [];
 async function wait(operation) { for(let i=0;i<150;i++) { const value=await operation(); if(value) return value; await new Promise(r=>setTimeout(r,20)); } throw new Error('Fixture state timeout'); }
-async function manifest(provider) {
-    return wait(async()=> { try { for(const name of await readdir(directory)) { if(!name.endsWith('.json')) continue; const value=JSON.parse(await readFile(join(directory,name),'utf8')); if(value.provider===provider) return value; } } catch {} });
+async function manifest(provider, exceptPID) {
+    return wait(async()=> { try { for(const name of await readdir(directory)) { if(!name.endsWith('.json')) continue; const value=JSON.parse(await readFile(join(directory,name),'utf8')); if(value.provider===provider && value.pid!==exceptPID) return value; } } catch {} });
 }
 async function http(m,path,value) {
     const response=await fetch(`http://127.0.0.1:${m.port}${path}`,{method:value===undefined?'GET':'POST',headers:{Authorization:`Bearer ${m.token}`,'Content-Type':'application/json'},body:value===undefined?undefined:JSON.stringify(value),signal:AbortSignal.timeout(15000)});
@@ -56,11 +56,35 @@ try {
     assert.deepEqual(notifications.find(n=>n.method==='notifications/claude/channel/permission').params,{request_id:'abcde',behavior:'allow'});
     assert.equal((await claudeAction({action:'approval',request_id:'abcde',approved:true})).status,409);
     assert.equal((await claudeAction({...send,agent_pid:claude.pid+1,request_id:'wrong-pid'})).status,409);
+    const questionHook = launch(join(repo,'dist/plugins/agentmux-claude/hook.mjs'), {hook_event_name:'PreToolUse',tool_name:'AskUserQuestion',session_id:'claude-fixture',cwd,tool_input:{questions:[{header:'Destination',question:'Which previously unseen destination?',options:[{label:'lunar-base',description:'Moon'},{label:'ocean',description:'Water'}],multiSelect:false}]}});
+    const questionSnapshot=await wait(async()=>{const s=(await http(claude,'/snapshot')).value;return s.approvals.some(a=>a.kind==='questions')?s:null});
+    const question=questionSnapshot.approvals.find(a=>a.kind==='questions');
+    assert.equal((await claudeAction({action:'approval',request_id:question.id,approved:true,answers:{}})).status,400);
+    assert.equal((await claudeAction({action:'approval',request_id:question.id,approved:true,answers:{'0':['ocean']}})).status,200);
+    const hookAnswer=await questionHook.done;assert.equal(hookAnswer.code,0,hookAnswer.stderr);
+    const hookOutput=JSON.parse(hookAnswer.stdout).hookSpecificOutput;
+    assert.equal(hookOutput.permissionDecision,'allow');assert.equal(hookOutput.updatedInput.answers['Which previously unseen destination?'],'ocean');
+    assert.equal(hookOutput.updatedInput.questions[0].options[1].label,'ocean');
+    assert.equal((await claudeAction({action:'approval',request_id:question.id,approved:true,answers:{'0':['lunar-base']}})).status,409);
+    console.log('PASS: shipped Claude question hook: dynamic form, exact original questions preserved, answer returned to the original continuation, incomplete/stale replies rejected');
+    const approvalClient=new Client({name:'native-hook-fixture',version:'1.0.0'},{capabilities:{}});
+    const approvalTransport=new StdioClientTransport({command:process.execPath,args:[join(repo,'dist/plugins/agentmux-claude/server.mjs')],cwd,env:{...env,AGENTMUX_CLAUDE_CHANNEL:'0'},stderr:'pipe'});
+    try {
+        await approvalClient.connect(approvalTransport);
+        const native=await manifest('claude',claude.pid);
+        const verdictPromise=http(native,'/events',{hook_event_name:'PermissionRequest',session_id:'native-approval',cwd,tool_name:'UnseenTool',tool_input:{arbitrary:'runtime data'}});
+        const pending=await wait(async()=>{const s=(await http(native,'/snapshot')).value;return s.approvals.find(a=>a.kind==='confirm')});
+        assert.equal((await http(native,'/snapshot')).value.capabilities.message,false);
+        assert.equal((await http(native,'/actions',{action:'approval',agent_pid:native.pid,request_id:pending.id,approved:false})).status,200);
+        const nativeVerdict=await verdictPromise;assert.equal(nativeVerdict.value.hookSpecificOutput.decision.behavior,'deny');
+        assert.equal((await http(native,'/actions',{action:'approval',agent_pid:native.pid,request_id:pending.id,approved:true})).status,409);
+        console.log('PASS: Claude native permission hook without Channel opt-in: dynamic tool metadata, explicit denial, original hook response and stale decision rejection');
+    } finally {await approvalClient.close();await approvalTransport.close();}
     console.log('PASS: Claude official MCP channel: same-session input/reply, tools approval notifications, authentication, deduplication, stale approvals and PID rejection');
 
     const fixture=join(temporary,'codex-fixture');const stateFile=join(temporary,'codex-state.json');const logFile=join(temporary,'codex-operations.jsonl');
     await writeFile(stateFile,JSON.stringify({busy:false}));
-    await writeFile(fixture,`#!/usr/bin/env node\nimport fs from 'node:fs';import readline from 'node:readline';const args=process.argv.slice(2);const log=value=>fs.appendFileSync(${JSON.stringify(logFile)},JSON.stringify(value)+'\\n');if(args[0]==='queue'){log({method:'queue',args});fs.writeFileSync(${JSON.stringify(stateFile)},JSON.stringify({busy:true}));process.exit(0)}if(args[0]!=='app-server'||args[1]!=='proxy')process.exit(2);readline.createInterface({input:process.stdin}).on('line',line=>{let request=JSON.parse(line);if(!request.id)return;log({method:request.method,params:request.params});let result={};if(request.method==='thread/read')result={thread:{id:'fixture-thread',cwd:${JSON.stringify(cwd)},status:{type:JSON.parse(fs.readFileSync(${JSON.stringify(stateFile)})).busy?'active':'idle'}}};if(request.method==='model/list')result={data:[{model:'model-a',displayName:'Model A'},{model:'model-b',displayName:'Model B'}]};if(request.method==='thread/turns/list')result={data:[{id:'turn-fixture',status:'inProgress'}]};if(request.method==='turn/interrupt')fs.writeFileSync(${JSON.stringify(stateFile)},JSON.stringify({busy:false}));process.stdout.write(JSON.stringify({id:request.id,result})+'\\n')});\n`);
+    await writeFile(fixture,`#!/usr/bin/env node\nimport fs from 'node:fs';import readline from 'node:readline';const args=process.argv.slice(2);const log=value=>fs.appendFileSync(${JSON.stringify(logFile)},JSON.stringify(value)+'\\n');if(args[0]==='queue'){log({method:'queue',args});fs.writeFileSync(${JSON.stringify(stateFile)},JSON.stringify({busy:true}));process.exit(0)}if(args[0]!=='app-server'||args[1]!=='proxy')process.exit(2);readline.createInterface({input:process.stdin}).on('line',line=>{let request=JSON.parse(line);if(!request.id)return;log({method:request.method,params:request.params});let result={};if(request.method==='thread/read')result={thread:{id:'fixture-thread',cwd:${JSON.stringify(cwd)},status:{type:JSON.parse(fs.readFileSync(${JSON.stringify(stateFile)})).busy?'active':'idle'}}};if(request.method==='model/list')result={data:[{model:'model-a',displayName:'Model A'},{model:'model-b',displayName:'Model B',defaultReasoningEffort:'adaptive-new-level',supportedReasoningEfforts:[{reasoningEffort:'adaptive-new-level',description:'Dynamically advertised fixture effort'}]}]};if(request.method==='thread/turns/list')result={data:[{id:'turn-fixture',status:'inProgress'}]};if(request.method==='turn/interrupt')fs.writeFileSync(${JSON.stringify(stateFile)},JSON.stringify({busy:false}));process.stdout.write(JSON.stringify({id:request.id,result})+'\\n')});\n`);
     await chmod(fixture,0o700);
     const hookFile=join(repo,'dist/plugins/agentmux-codex/hook.mjs');
     const hookEvent={session_id:'fixture-thread',cwd,model:'model-a',hook_event_name:'SessionStart'};
@@ -89,12 +113,16 @@ try {
         assert.equal((await api(`/${session.id}/actions`,{action:'message',text:'wrong pid',request_id:'wrong-api',agent_pid:session.agent_pid+1})).status,409);
     }
     console.log('PASS: externally started Claude/Codex plugins discovered through Rust API; iOS-shaped snapshots, same-process commands and PID checks');
-    assert.equal((await codexAction({action:'model',model:'model-b'})).status,200);
+    assert.equal(snapshot.models[1].reasoning_efforts[0].id,'adaptive-new-level');
+    assert.equal((await codexAction({action:'model',model:'model-b',effort:'not-advertised'})).status,400);
+    assert.equal((await codexAction({action:'model',model:'model-b',effort:'adaptive-new-level'})).status,200);
     const prompt={action:'message',text:'Continue this exact existing Codex session',request_id:'codex-once'};
     assert.equal((await codexAction(prompt)).status,200);assert.equal((await codexAction(prompt)).status,200);
     let operations=(await readFile(logFile,'utf8')).trim().split('\n').map(JSON.parse);
     assert.equal(operations.filter(o=>o.method==='queue').length,1);
+    assert.deepEqual(operations.find(o=>o.method==='thread/settings/update').params,{threadId:'fixture-thread',model:'model-b',effort:'adaptive-new-level'});
     assert.ok(operations.find(o=>o.method==='queue').args.includes('model-b'));
+    assert.ok(operations.find(o=>o.method==='queue').args.includes('model_reasoning_effort=\"adaptive-new-level\"'));
     assert.equal((await codexAction({action:'abort'})).status,200);
     assert.equal((await codexAction({action:'command',text:'compact',request_id:'compact'})).status,200);
     const permission=launch(hookFile,{...hookEvent,hook_event_name:'PermissionRequest',turn_id:'turn-fixture',tool_name:'Bash',tool_input:{command:'touch fixture'}},{AGENTMUX_CODEX_BIN:fixture});

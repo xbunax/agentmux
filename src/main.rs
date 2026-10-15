@@ -2,6 +2,7 @@ mod agents;
 mod attachments;
 mod config;
 mod discovery;
+mod interactions;
 mod pairing;
 mod pi_bridge;
 mod plugin_bridge;
@@ -365,6 +366,7 @@ async fn upload(
 }
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    interactions::initialize()?;
     if std::env::args().nth(1).as_deref() == Some("connect") {
         return discovery::connect_cli(std::env::args().nth(2).unwrap_or("SSH device".into()))
             .await;

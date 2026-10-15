@@ -14,6 +14,7 @@ const commands = [
     { name: 'status', description: '查看插件连接及会话状态', kind: 'command' },
 ];
 let modelOverride = '';
+let effortOverride = '';
 let bridge;
 function clearApprovals() { for (const approval of pending.values()) approval.finish({}); pending.clear(); }
 async function inspect() {
@@ -31,6 +32,7 @@ function queue(text, files = []) {
         for (const file of files) if (file.mime_type?.startsWith('image/')) args.push('--image', file.path);
         if (process.env.AGENTMUX_CODEX_SOCKET) args.push('--remote', 'unix://' + process.env.AGENTMUX_CODEX_SOCKET);
         if (modelOverride) args.push('--model', modelOverride);
+        if (effortOverride) args.push('-c', 'model_reasoning_effort=' + JSON.stringify(effortOverride));
         const child = spawn(rpc.executable, args, { cwd: state.cwd, stdio: ['ignore', 'pipe', 'ignore'] });
         let size = 0;
         child.stdout.on('data', chunk => { size += chunk.length; if (size > 65536) child.kill(); });
@@ -46,7 +48,8 @@ async function models() {
         data.push(...(value.data ?? [])); cursor = value.nextCursor;
         if (!cursor) break;
     }
-    return data.map(model => ({ id: model.model, name: model.displayName ?? model.model, provider: '' }));
+    return data.map(model => ({ id: model.model, name: model.displayName ?? model.model, provider: '',
+        reasoning_efforts: (model.supportedReasoningEfforts ?? []).map(e => ({id:e.reasoningEffort,name:e.description || e.reasoningEffort})), default_effort:model.defaultReasoningEffort }));
 }
 bridge = await startBridge({
     provider: 'codex', id: state.session_id, cwd: state.cwd, nativePID: state.agent_pid,
@@ -73,8 +76,13 @@ bridge = await startBridge({
             if (action.text.startsWith('/')) throw invalid('请从补全列表选择插件支持的命令；不会把终端命令作为聊天文本发送。', 400);
             await queue(action.text, action.uploaded_files);
         } else if (action.action === 'model') {
-            if (!(await models()).some(m => m.id === action.model)) throw invalid('此模型不在 Codex 的可用列表中。', 400);
+            const model = (await models()).find(m => m.id === action.model);
+            if (!model) throw invalid('此模型不在 Codex 的可用列表中。', 400);
+            const effort = action.effort || model.default_effort;
+            if (effort && !model.reasoning_efforts.some(e => e.id === effort)) throw invalid('思考强度不在此模型公开的能力中。', 400);
+            await rpc.call('thread/settings/update', {threadId:state.session_id,model:action.model,...(effort ? {effort} : {})});
             modelOverride = action.model;
+            effortOverride = effort || '';
         } else if (action.action === 'abort') {
             const turns = await rpc.call('thread/turns/list', { threadId: state.session_id, limit: 1, sortDirection: 'desc', itemsView: 'notLoaded' });
             const turn = turns.data?.find(t => t.status === 'inProgress');

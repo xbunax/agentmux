@@ -15,6 +15,7 @@ previous = termios.tcgetattr(fd)
 tty.setraw(fd)
 draft, pending, mode, selected = '', '', 'editor', 0
 pasting = False
+model_selection = ''
 sys.stdout.write('\x1b[?2004h'); sys.stdout.flush()
 
 def record(kind, **values):
@@ -22,13 +23,14 @@ def record(kind, **values):
         output.write(json.dumps({'kind':kind, 'provider':provider, 'pid':os.getpid(), **values})+'\n')
 
 def render():
-    if mode in ['model','approval']:
-        choices = ['Model A','Model B','Model C'] if mode=='model' else ['Allow once','Deny']
-        title = 'Choose model' if mode=='model' else 'Approve writing the fixture file?'
+    if mode in ['model','approval','effort']:
+        choices = ['Adaptive calm','Fast focus','Deep exploration'] if mode=='effort' else ['Model A','Model B','Model C'] if mode=='model' else ['Allow once','Deny']
+        title = 'Select computation intensity' if mode=='effort' else 'Choose model' if mode=='model' else 'Approve writing the fixture file?'
         text='\x1b[2J\x1b[H\x1b[?25l'+('────────────────────────────────────────\r\n' if provider=='pi' else '')+title+'\r\n\r\n'
         for index,label in enumerate(choices):
             text+=(('→ ' if provider=='pi' else '› ') if index==selected else '  ')+(label if provider=='pi' else f'{index+1}. {label}')+'\r\n'
         text+='\r\nenter to select · esc to cancel' if provider=='pi' else 'Enter to confirm · Esc to cancel'
+        if mode=='effort': text+=' · s session only'
         if provider=='pi': text+='\r\n────────────────────────────────────────'
     elif mode=='busy': text='\x1b[2J\x1b[H\x1b[?25lWorking · Esc to cancel'
     elif provider=='pi':
@@ -59,8 +61,8 @@ try:
             if pending.startswith('\x1b['):
                 if len(pending)<3: break
                 if pending[2] in ['A','B']:
-                    if mode in ['model','approval']:
-                        selected=(selected+(1 if pending[2]=='B' else -1))%(3 if mode=='model' else 2)
+                    if mode in ['model','approval','effort']:
+                        selected=(selected+(1 if pending[2]=='B' else -1))%(2 if mode=='approval' else 3)
                     pending=pending[3:]; render();continue
                 if not any(c.isalpha() or c=='~' for c in pending[2:]): break
             char,pending=pending[0],pending[1:]
@@ -70,8 +72,11 @@ try:
                 if mode=='busy': record('abort')
                 mode='editor';draft='';render();continue
             if char=='\x15': draft='';render();continue
-            if char in ['\r','\n']:
-                if mode=='model': record('model',value=['Model A','Model B','Model C'][selected]);mode='editor'
+            if char in ['\r','\n'] or (char=='s' and mode=='effort'):
+                if mode=='model':
+                    if provider=='codex': model_selection=['Model A','Model B','Model C'][selected];mode='effort';selected=0
+                    else: record('model',value=['Model A','Model B','Model C'][selected]);mode='editor'
+                elif mode=='effort': record('model',value=model_selection,effort=['Adaptive calm','Fast focus','Deep exploration'][selected]);mode='editor'
                 elif mode=='approval':
                     record('approval',approved=selected==0)
                     if selected==0: events.with_suffix('.approved').write_text('approved by mobile confirmation')

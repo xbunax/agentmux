@@ -7,11 +7,63 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+class DialogRelay {
+    private pending = new Map<string, { view: any; finish: (value: any) => void }>();
+    private originals = new Map<any, Map<string, { original: any; wrapped: any }>>();
+    get views() { return [...this.pending.values()].map(p => p.view); }
+    wrap(ui: any) {
+        if (this.originals.has(ui)) return;
+        const methods = new Map<string, { original: any; wrapped: any }>();
+        this.originals.set(ui, methods);
+        // These are UI primitives with a documented AbortSignal, not scenario names.
+        for (const kind of ["select", "confirm", "input"]) {
+            const original = ui[kind];
+            if (typeof original !== "function") continue;
+            const relay = this;
+            const wrapped = function(title: string, argument: any, options: any = {}) {
+                if (relay.pending.size >= 16) return original.call(ui, title, argument, options);
+                const id = randomUUID(), controller = new AbortController();
+                const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+                const view = { id, kind, title, detail: kind === "select" ? "" : String(argument ?? ""), options: kind === "select" ? [...argument] : [], questions: [] };
+                return new Promise((resolve, reject) => {
+                    let settled = false;
+                    const finish = (value: any) => {
+                        if (settled) return;
+                        settled = true; relay.pending.delete(id); resolve(value);
+                        controller.abort(); // dismiss the original SDK dialog after resolving once
+                    };
+                    relay.pending.set(id, { view, finish });
+                    try {
+                        Promise.resolve(original.call(ui, title, argument, { ...options, signal })).then(finish, error => {
+                            if (!settled) { settled = true; relay.pending.delete(id); reject(error); }
+                        });
+                    } catch (error) { settled = true; relay.pending.delete(id); reject(error); }
+                });
+            };
+            methods.set(kind, { original, wrapped }); ui[kind] = wrapped;
+        }
+    }
+    answer(id: string, approved: boolean, value: string): number {
+        const pending = this.pending.get(id);
+        if (!pending) return 409;
+        if (approved && (typeof value !== "string" || value.length > 8192 || (pending.view.kind === "select" && !pending.view.options.includes(value)))) return 400;
+        pending.finish(pending.view.kind === "confirm" ? approved : approved ? value : undefined);
+        return 200;
+    }
+    close() {
+        for (const pending of this.pending.values()) pending.finish(pending.view.kind === "confirm" ? false : undefined);
+        for (const [ui, methods] of this.originals) for (const [name, {original, wrapped}] of methods) if (ui[name] === wrapped) ui[name] = original;
+        this.originals.clear();
+    }
+}
+
 
 export default function agentmux(pi: ExtensionAPI) {
     let context: ExtensionContext | undefined;
     let draft: unknown;
     let waiting = false;
+    let waitingTitle = "";
+    const dialogs = new DialogRelay();
     let sending = false;
     let mutation = false;
     let sessionInfo = "";
@@ -36,18 +88,18 @@ export default function agentmux(pi: ExtensionAPI) {
                 reply(200, {
                     entries, pid: process.pid, cwd: ctx.cwd, session_id: ctx.sessionManager.getSessionId(),
                     bridge_id: bridgeID, bridge_pid: process.pid, native_session_id: ctx.sessionManager.getSessionId(),
-                    messages: [], alive: true, approvals: [], error: null, revision: 0, source: "pi-plugin",
+                    messages: [], alive: true, approvals: dialogs.views.length ? dialogs.views : waiting ? [{id:"local-dialog",kind:"unsupported",title:waitingTitle || "Pi 等待交互",detail:"此自定义界面未公开结构化输入，请在 Mac 上处理。",options:[],questions:[]}] : [], error: null, revision: 0, source: "pi-plugin",
                     commands: [
                         { name: "model", description: "选择当前会话的模型", kind: "model" },
                         { name: "compact", description: "压缩当前会话上下文", kind: "command" },
                         { name: "session", description: "查看当前会话信息", kind: "command" },
                         ...(pi.getCommands?.() ?? []).filter(c => !["model", "compact", "session"].includes(c.name)).map(c => ({ name: c.name, description: c.description ?? "Pi 命令", kind: "command" })),
                     ],
-                    capabilities: { message: !sending && ctx.isIdle() && !waiting && !ctx.hasPendingMessages() && !ctx.ui.getEditorText(), abort: true, models: true, approvals: false },
+                    capabilities: { message: !sending && ctx.isIdle() && !waiting && !dialogs.views.length && !ctx.hasPendingMessages() && !ctx.ui.getEditorText(), abort: true, models: true, approvals: true },
                     notice: waiting ? "Pi 正在等待 Mac 上的扩展对话框。" : sessionInfo || "已通过插件连接原来的 Pi 会话。",
                     busy: sending || !ctx.isIdle(), waiting, model: ctx.model?.id ?? "",
                     models: ctx.modelRegistry.getAvailable().map(m => ({ id: m.id, name: m.name, provider: m.provider })),
-                    can_send: !sending && ctx.isIdle() && !waiting && !ctx.hasPendingMessages() && !ctx.ui.getEditorText(),
+                    can_send: !sending && ctx.isIdle() && !waiting && !dialogs.views.length && !ctx.hasPendingMessages() && !ctx.ui.getEditorText(),
                 });
                 return;
             }
@@ -64,7 +116,10 @@ export default function agentmux(pi: ExtensionAPI) {
             if (mutation) { reply(409, { error: "Another action is in progress" }); return; }
             mutation = true;
             try {
-                if (action.action === "message") {
+                if (action.action === "approval") {
+                    const status = dialogs.answer(action.request_id, action.approved === true, action.text ?? "");
+                    reply(status, status === 200 ? {accepted:true} : {error:"交互已结束，或答案不在当前表单中"}); return;
+                } else if (action.action === "message") {
                     if (typeof action.text !== "string" || !action.text.trim() || Buffer.byteLength(action.text) > 65536 || typeof action.request_id !== "string" || !action.request_id || action.request_id.length > 128) {
                         reply(400, { error: "Message and request_id required" }); return;
                     }
@@ -72,7 +127,7 @@ export default function agentmux(pi: ExtensionAPI) {
                     if (previous !== undefined) {
                         reply(previous.text === action.text && previous.accepted ? 200 : 409, { accepted: previous.accepted, error: "Inspect the previous delivery before retrying" }); return;
                     }
-                    if (delivered.size >= 1024 || sending || !ctx.isIdle() || waiting || ctx.hasPendingMessages() || ctx.ui.getEditorText()) {
+                    if (delivered.size >= 1024 || sending || !ctx.isIdle() || waiting || dialogs.views.length || ctx.hasPendingMessages() || ctx.ui.getEditorText()) {
                         reply(409, { error: "Pi is busy, waiting for a dialog, or the Mac editor has a draft" }); return;
                     }
                     const images = [];
@@ -84,7 +139,7 @@ export default function agentmux(pi: ExtensionAPI) {
                         }
                     }
                     // File reads yield; recheck the original editor before submitting any input.
-                    if (sending || !ctx.isIdle() || waiting || ctx.hasPendingMessages() || ctx.ui.getEditorText()) {
+                    if (sending || !ctx.isIdle() || waiting || dialogs.views.length || ctx.hasPendingMessages() || ctx.ui.getEditorText()) {
                         reply(409, { error: "Pi input state changed while loading attachments" }); return;
                     }
                     sending = true;
@@ -126,6 +181,7 @@ export default function agentmux(pi: ExtensionAPI) {
         renameSync(temporary, manifest);
     };
     pi.on("session_start", async (_, ctx) => {
+        dialogs.wrap(ctx.ui);
         context = ctx; draft = undefined; sending = false; waiting = false; sessionInfo = "";
         if (!started) {
             started = true;
@@ -138,10 +194,11 @@ export default function agentmux(pi: ExtensionAPI) {
     pi.on("agent_start", (_, ctx) => { context = ctx; sending = false; });
     pi.on("agent_settled", (_, ctx) => { context = ctx; sending = false; draft = undefined; });
     pi.on("model_select", (_, ctx) => { context = ctx; });
-    pi.on("ui_prompt_start", () => { waiting = true; });
-    pi.on("ui_prompt_end", () => { waiting = false; });
+    pi.on("ui_prompt_start", event => { waiting = true; waitingTitle = event.title ?? ""; });
+    pi.on("ui_prompt_end", () => { waiting = false; waitingTitle = ""; });
     pi.on("session_shutdown", async () => {
         context = undefined;
+        dialogs.close();
         server.closeAllConnections(); server.close();
         try { unlinkSync(manifest); } catch { /* already removed */ }
     });

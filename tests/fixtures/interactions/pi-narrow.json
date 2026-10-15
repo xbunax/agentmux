@@ -1,0 +1,7 @@
+{
+  "provider": "pi",
+  "cursor_x": 2,
+  "cursor_y": 5,
+  "cursor_visible": true,
+  "raw": "\u001b[38;2;131;165;152m\u001b[49m──────────────────────────────────────────────\n\n\u001b[38;2;254;128;25mOnly showing models from configured providers.\nUse /login to add providers.\u001b[39m\n\n>\n\n\u001b[38;2;250;189;47m→ ✓ gpt-6-sol\u001b[39m \u001b[38;2;168;153;132m[openai-codex] · default\u001b[39m\n    claude-fable-5 \u001b[38;2;168;153;132m[anthropic]\u001b[39m\n    claude-fable-5-1 \u001b[38;2;168;153;132m[anthropic]\u001b[39m\n    claude-haiku-4-5 \u001b[38;2;168;153;132m[anthropic]\u001b[39m\n    claude-haiku-4-5-20251001 \u001b[38;2;168;153;132m[anthropic]\u001b[39m\n    claude-haiku-5-5 \u001b[38;2;168;153;132m[anthropic]\u001b[39m\n    claude-opus-4-5 \u001b[38;2;168;153;132m[anthropic]\u001b[39m\n    claude-opus-4-5-20251101 \u001b[38;2;168;153;132m[anthropic]\u001b[39m\n    claude-opus-4-6 \u001b[38;2;168;153;132m[anthropic]\u001b[39m\n    claude-opus-4-7 \u001b[38;2;168;153;132m[anthropic]\u001b[39m\n\u001b[38;2;168;153;132m  (1/70)\u001b[39m\n\n\u001b[38;2;168;153;132m  Model Name: GPT-6 Sol\n\n\u001b[38;5;208m\u001b[39m \u001b[1m\u001b[38;5;208mGPT-6 Sol\u001b[0m\u001b[37m | \u001b[38;5;142m󰉋\u001b[39m \u001b[1m\u001b[38;5;142magent_test\u001b[0m\u001b[37m | \u001b[38;5;109m󰊢\u001b[39m \u001b[1m\u001b[38;5;109mmain\u001b[0m \u001b[1m\u001b[38;5;109m●\u001b[0m\u001b[37m | \u001b[35m\u001b[39m \u001b[1m\u001b[35m3.8\u001b[0m…\n"
+}

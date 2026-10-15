@@ -43,7 +43,7 @@ command = ['xcrun', 'swiftc', '-D', 'DEBUG', '-parse-as-library', '-sdk', sdk,
            *map(str, sources), str(stub), '-o', str(executable)]
 if not executable.exists() or any(path.stat().st_mtime > executable.stat().st_mtime for path in sources):
     subprocess.run(command, check=True, cwd=repo)
-info = {'CFBundleIdentifier': 'dev.agentmux.ui-preview', 'CFBundleExecutable': 'AgentMuxUIPreview', 'CFBundleName': 'AgentMux UI Preview', 'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '0.5.0', 'CFBundleVersion': '5', 'LSMinimumSystemVersion': '14.0', 'NSPrincipalClass': 'NSApplication', 'UIApplicationSceneManifest': {'UIApplicationSupportsMultipleScenes': False}}
+info = {'CFBundleIdentifier': 'dev.agentmux.ui-preview', 'CFBundleExecutable': 'AgentMuxUIPreview', 'CFBundleName': 'AgentMux UI Preview', 'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '0.6.0', 'CFBundleVersion': '6', 'LSMinimumSystemVersion': '14.0', 'NSPrincipalClass': 'NSApplication', 'UIApplicationSceneManifest': {'UIApplicationSupportsMultipleScenes': False}}
 (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
 if args.build_only:
     print('Built real SwiftUI pages with debug-only, offline transport: ' + str(app))

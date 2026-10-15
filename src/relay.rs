@@ -118,7 +118,12 @@ pub async fn snapshot(
 ) -> Result<Json<Value>> {
     authorize(&headers, &app)?;
     let session = tmux_agents::find(&app, &id).await?;
-    if let Some(snapshot) = pi_bridge::snapshot(&session).await? {
+    if let Some(mut snapshot) = pi_bridge::snapshot(&session).await? {
+        let controls = terminal_controls(&app, &session).await?;
+        if !controls["interaction"].is_null() {
+            snapshot["interaction"] = controls["interaction"].clone();
+            snapshot["capabilities"]["message"] = json!(false);
+        }
         return Ok(Json(snapshot));
     }
     let relay = state(&app, &session).await;
@@ -181,6 +186,12 @@ pub struct Action {
     #[serde(default)]
     choice: Option<usize>,
     #[serde(default)]
+    control_id: String,
+    #[serde(default)]
+    approved: bool,
+    #[serde(default)]
+    route: Option<String>,
+    #[serde(default)]
     attachments: Vec<String>,
     #[serde(skip_deserializing, default)]
     uploaded_files: Vec<attachments::Attachment>,
@@ -204,8 +215,10 @@ pub async fn action(
     } else if !request.attachments.is_empty() {
         return Err(bad("Only messages accept attachments"));
     }
-    if let Some(response) =
-        pi_bridge::action(&session, serde_json::to_value(&request).map_err(internal)?).await?
+    if request.route.as_deref() != Some("tmux")
+        && !request.action.starts_with("menu_")
+        && let Some(response) =
+            pi_bridge::action(&session, serde_json::to_value(&request).map_err(internal)?).await?
     {
         return Ok(Json(response));
     }
@@ -225,7 +238,7 @@ pub async fn action(
             }
             state.selected = Some(request.conversation_id);
         }
-        "menu_select" | "menu_confirm" | "menu_cancel" => {
+        "menu_select" | "menu_confirm" | "menu_cancel" | "menu_action" | "menu_search" => {
             let frame = tmux_ui::capture(&app, &id).await?;
             let menu = frame
                 .menu(&session.command, session.agent_pid)
@@ -233,7 +246,25 @@ pub async fn action(
             if menu.id != request.menu_id {
                 return Err(conflict("Mac 上的菜单已变化，请确认最新选项后重试。"));
             }
-            if request.action == "menu_select" {
+            let current_process = tmux_agents::find(&app, &id).await?;
+            if current_process.agent_pid != request.agent_pid {
+                return Err(conflict("Agent process changed; reopen the conversation"));
+            }
+            if request.action == "menu_search" {
+                if !menu.searchable
+                    || request.text.len() > 256
+                    || request.text.chars().any(char::is_control)
+                {
+                    return Err(bad("当前交互没有可编辑的搜索框，或搜索内容无效"));
+                }
+                tmux(&app, &["send-keys", "-t", &id, "C-a", "C-k"]).await?;
+                if !request.text.is_empty() {
+                    tmux(&app, &["send-keys", "-t", &id, "-l", &request.text]).await?;
+                }
+            } else if request.action == "menu_action" {
+                let key = interactions::executable(&menu, &request.control_id)?;
+                tmux(&app, &["send-keys", "-t", &id, &key]).await?;
+            } else if request.action == "menu_select" {
                 let target = request.choice.ok_or_else(|| bad("请选择菜单选项"))?;
                 if target >= menu.options.len() {
                     return Err(bad("Invalid menu option"));

@@ -1,5 +1,19 @@
 # Verification record
 
+## Structured interaction adapters and plugin research — 2026-10-15, version 0.6
+
+Read-only inspection found the real `test` panes displaying Codex reasoning intensity, Claude's wrapped model menu, and Pi's search selector with clipped bottom help. The old adjacent-row/footer assumptions suppressed their cards. The new structural registry uses layout/style data rather than model names, question text or approval wording. A generic card exposes validated current actions, adjacent navigation, optional search and explicit confirmation.
+
+- 34 Rust tests and Clippy passed, including original narrow-frame fixtures, arbitrary profile/choice names, wrapped descriptions, a single search result with dim annotations, and printed examples above a live editor that must not become controls.
+- Isolated three-provider tmux acceptance passed; Codex now explicitly exercises model selection followed by a second intensity dialog, then a server-advertised session-only control. Stale menus and forged controls are rejected; original PIDs are preserved.
+- GET-only checks against all five original user panes found the three `test` menus visible, without sending any input to those processes.
+- Real Pi 1.2.0 passed a 47×23, 73-model offline selector/search/confirmation test. Its actual SDK also completed model change and arbitrary select/confirm/input cards through the Rust API, dismissing the original Mac dialog and resuming the original continuation. The documented symlink installation loads correctly.
+- Packaged Claude question hook passed dynamic question rendering, exact input preservation, original hook answer return and incomplete/stale answer rejection. Native permission-hook denial passed without Channel opt-in; existing Channel permission notifications still passed through their separate route.
+- Codex fixture passed dynamically advertised reasoning options, rejection of unsupported effort, and exact-thread `thread/settings/update`. The installed Codex 0.162.1 generated the matching experimental schema. No extra thread was started or resumed.
+- iOS 0.6.0/build 6 Release compiled with generic action/search cards and provider-advertised model/intensity selection. No real iPhone UI test was performed.
+
+See [research, sources, architecture and limits](INTERACTION-PLUGINS.md). Claude Mods configuration integration remains research; hooks do not export every built-in picker or network permission dialog. Live Codex settings and Claude hook behavior during actual provider tasks remain unverified. No model request was sent, no user's Agent was restarted, and the running user daemon was left untouched.
+
 ## Telegram-inspired UI and temporary chat attachments — 2026-10-15, version 0.5
 
 The iOS app now has searchable/pinnable Agent rows, provider filters, adaptive navigation, themed settings/files, message bubbles, rich CLI command cards, copyable code blocks, searchable command/model sheets, and explicit menu confirmation. Chat uses a paperclip picker, removable attachment tray, and photo/file cards. Drafts and pending request IDs belong to each conversation.

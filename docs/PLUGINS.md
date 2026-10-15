@@ -24,7 +24,7 @@ codex plugin add agentmux-codex@agentmux --json
 
 Review and trust the plugin's hooks through Codex's normal trust flow. Enable them in the intended session using the installed Codex plugin workflow. Until hooks run and register that session, its tmux forwarding remains available. A process that cannot reload plugins must continue through TUI forwarding, or load the plugin when that conversation is next resumed. AgentMux does not restart it automatically.
 
-The plugin queues text to the hook's exact session ID via the shared Codex daemon. It supports model overrides for queued messages, compact, status, interrupt and explicit PermissionRequest allow/deny. It never calls `thread/start` or `thread/resume`. `--no-daemon` sessions cannot use this native bridge. `AGENTMUX_CODEX_BIN` overrides the executable; `AGENTMUX_CODEX_SOCKET` selects a nondefault shared Unix socket.
+The plugin queues text to the hook's exact session ID via the shared Codex daemon. Version 0.6 reads model/effort choices from `model/list` and updates that live thread's subsequent-turn settings using experimental `thread/settings/update`; selected overrides are also carried by queued messages. It supports compact, status, interrupt and explicit PermissionRequest allow/deny. It never calls `thread/start` or `thread/resume`. `--no-daemon` sessions cannot use this native bridge. `AGENTMUX_CODEX_BIN` overrides the executable; `AGENTMUX_CODEX_SOCKET` selects a nondefault shared Unix socket.
 
 ## Claude Code
 
@@ -44,7 +44,9 @@ sh /absolute/path/to/agentmux/dist/plugins/agentmux-claude/launch.sh --resume SE
 
 The launcher sets `AGENTMUX_CLAUDE_CHANNEL=1` and passes `--dangerously-load-development-channels plugin:agentmux-claude@agentmux`. Review Claude's normal Channel trust prompt; organization policy may prevent Channels. Merely installing the MCP server does not enable incoming Channel messages. Inactive connections are omitted from the native plugin list; their tmux Agent remains accessible.
 
-An already-running Claude process without Channel opt-in continues through TUI forwarding. The native Channel cannot be hot-enabled by AgentMux. It supports user messages, replies and tool allow/deny; other native controls are not advertised. When the plugin is verified against a tmux pane, supported slash commands, menus and Escape use that original pane. Full `AskUserQuestion` forms remain on the Mac. [Official Channel protocol and restrictions](https://code.claude.com/docs/en/channels-reference).
+An already-running Claude process without Channel opt-in continues through TUI forwarding. The native Channel cannot be hot-enabled by AgentMux. It supports user messages, replies and tool allow/deny; other native controls are not advertised. When the plugin is verified against a tmux pane, supported slash commands, menus and Escape use that original pane. [Official Channel protocol and restrictions](https://code.claude.com/docs/en/channels-reference).
+
+Version 0.6 adds structured `AskUserQuestion` forms through the documented PreToolUse hook, and a PermissionRequest hook for sessions without Channel permission relay. The enabled plugin/MCP connection is required. When Channel is enabled, permission hooks defer to it to avoid duplicate requests. Timeouts and disconnects preserve the local flow; expired IDs cannot grant anything. Install/update and reload the plugin in the intended session. Built-in model configuration still uses its original pane; a full Mods configuration adapter remains research, as detailed in [interaction adapters](INTERACTION-PLUGINS.md).
 
 ## Pi
 
@@ -61,7 +63,9 @@ mkdir -p ~/.pi/agent/extensions
 ln -s /absolute/path/to/agentmux/integrations/pi/agentmux.ts ~/.pi/agent/extensions/agentmux.ts
 ```
 
-Inspect an existing destination instead of overwriting it. With a custom `PI_CODING_AGENT_DIR`, use its `extensions` directory. The SDK bridge exposes the current branch/stream, messages, abort, available models, compact, session information and public extension commands. Dialogs owned by other extensions remain local unless the tmux menu recognizer supports their layout.
+Inspect an existing destination instead of overwriting it. With a custom `PI_CODING_AGENT_DIR`, use its `extensions` directory. The SDK bridge exposes the current branch/stream, messages, abort, available models, compact, session information and public extension commands. Custom components without the public dialog contract remain local unless the tmux structural adapter supports their layout.
+
+Version 0.6 also mirrors SDK `select`, `confirm`, and `input` dialogs as structured cards, resolving the original same-process continuation. The original Mac UI remains usable; the first answer wins. SDK cancellation/timeout removes the card. Custom components and multiline editors remain local, with an unsupported-dialog notice. The entry file remains self-contained, including when installed through the documented symlink. Reload the extension to activate the new adapter.
 
 ## Discovery and troubleshooting
 

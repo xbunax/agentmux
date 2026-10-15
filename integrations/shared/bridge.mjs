@@ -78,7 +78,12 @@ export async function startBridge({ provider, id = randomUUID(), cwd, nativePID,
             const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
             if (request.url === '/events') {
                 if (!event) { reply(404, { error: 'Hooks unavailable' }); return; }
-                reply(200, await event(value)); return;
+                const controller = new AbortController();
+                const cancelled = () => controller.abort();
+                response.once('close',cancelled);
+                try { reply(200, await event(value,controller.signal)); }
+                finally { response.removeListener('close',cancelled); }
+                return;
             }
             if (value.agent_pid !== process.pid) { reply(409, { error: 'Plugin process changed; reopen the session' }); return; }
             const serial = !['abort', 'approval'].includes(value.action);

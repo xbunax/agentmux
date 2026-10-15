@@ -105,8 +105,8 @@ pub async fn snapshot(session: &tmux_agents::Session) -> Result<Option<Value>> {
     }
     let entries = value["entries"].as_array().cloned().unwrap_or_default();
     Ok(Some(
-        json!({"messages":transcripts::parse("pi",&entries),"models":value["models"],"commands":[],"model":value["model"],"busy":value["busy"],"alive":true,"approvals":[],"error":null,"revision":0,
-        "agent_pid":session.agent_pid,"source":"pi-extension","capabilities":{"message":value["can_send"],"abort":true,"models":true,"approvals":false},
+        json!({"messages":transcripts::parse("pi",&entries),"models":value["models"],"commands":value["commands"].as_array().cloned().unwrap_or_default(),"model":value["model"],"busy":value["busy"],"alive":true,"approvals":value["approvals"].as_array().cloned().unwrap_or_default(),"error":null,"revision":0,
+        "agent_pid":session.agent_pid,"source":"pi-extension","capabilities":{"message":value["can_send"],"abort":true,"models":true,"approvals":value["capabilities"]["approvals"] == true},
         "notice":if value["waiting"]==true {"Pi 正等待 Mac 上的扩展对话框。"}else{"已通过 Pi 扩展连接原有会话。"}}),
     ))
 }

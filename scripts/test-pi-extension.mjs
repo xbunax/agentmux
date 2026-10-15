@@ -9,11 +9,15 @@ const directory = await mkdtemp(join(tmpdir(), 'agentmux-pi-'));
 process.env.AGENTMUX_BRIDGE_DIR = directory;
 const handlers = new Map();
 let idle = true, editor = '', sends = 0, aborted = 0, chosen = '';
-let imageReceived;
+let imageReceived, desktopResolve;
 const model = { id: 'test-model', name: 'Fixture', provider: 'fixture' };
 const ctx = {
     cwd: '/fixture', model,
-    ui: { getEditorText: () => editor, notify() {} },
+    ui: { getEditorText: () => editor, notify() {},
+        select(title, values, opts) { return new Promise(resolve=>{desktopResolve=resolve;opts.signal?.addEventListener('abort',()=>resolve(undefined),{once:true});}); },
+        confirm(title, message, opts) { return new Promise(resolve=>{desktopResolve=resolve;opts.signal?.addEventListener('abort',()=>resolve(false),{once:true});}); },
+        input(title, placeholder, opts) { return new Promise(resolve=>{desktopResolve=resolve;opts.signal?.addEventListener('abort',()=>resolve(undefined),{once:true});}); },
+    },
     sessionManager: { getBranch: () => [{ type: 'message', id: 'first', parentId: null, message: { role: 'user', content: 'Hello' } }], getSessionId: () => 'fixture-session' },
     modelRegistry: { getAvailable: () => [model] },
     isIdle: () => idle, hasPendingMessages: () => false,
@@ -64,6 +68,24 @@ try {
     assert.equal(chosen, model.id);
     assert.equal((await action({ action: 'model', model: 'unavailable', provider: 'fixture' })).status, 400);
     assert.equal((await action({ action: 'abort', agent_pid: process.pid + 1 })).status, 409);
+    const selection = ctx.ui.select('Unseen deployment destination', ['lunar-base','underwater'], {});
+    snapshot=await (await fetch(origin+'/snapshot',{headers})).json();
+    let dialog=snapshot.approvals[0]; assert.equal(dialog.kind,'select'); assert.equal(snapshot.can_send,false);
+    assert.equal((await action({action:'approval',request_id:dialog.id,approved:true,text:'not-offered'})).status,400);
+    assert.equal((await action({action:'approval',request_id:dialog.id,approved:true,text:'underwater'})).status,200);
+    assert.equal(await selection,'underwater');
+    assert.equal((await action({action:'approval',request_id:dialog.id,approved:true,text:'lunar-base'})).status,409);
+    const confirmation=ctx.ui.confirm('Unseen permission', 'Approve a fixture action?', {});
+    snapshot=await (await fetch(origin+'/snapshot',{headers})).json();dialog=snapshot.approvals[0];
+    assert.equal((await action({action:'approval',request_id:dialog.id,approved:false})).status,200);assert.equal(await confirmation,false);
+    const input=ctx.ui.input('Unseen question', 'Reply here', {});
+    snapshot=await (await fetch(origin+'/snapshot',{headers})).json();dialog=snapshot.approvals[0];
+    desktopResolve('Answered on Mac');assert.equal(await input,'Answered on Mac');
+    assert.equal((await action({action:'approval',request_id:dialog.id,approved:true,text:'late phone response'})).status,409);
+    const cancelled=new AbortController(); const timeout=ctx.ui.input('Cancelled elsewhere', '', {signal:cancelled.signal});
+    cancelled.abort();assert.equal(await timeout,undefined);
+    assert.equal((await (await fetch(origin+'/snapshot',{headers})).json()).approvals.length,0);
+    console.log('PASS: public Pi SDK dialogs: arbitrary select/confirm/input, original continuations, Mac/mobile races, signal cancellation, invalid answers and stale IDs');
     const imagePath=join(directory,'image.png');
     const imageMessage={action:'message',text:'from phone',request_id:'image-message',uploaded_files:[{path:imagePath,mime_type:'image/png'}]};
     assert.equal((await action(imageMessage)).status,500);

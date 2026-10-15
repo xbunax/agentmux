@@ -1,6 +1,6 @@
 # AgentMux
 
-Rust macOS service + SwiftUI iOS client. Version 0.5 development build.
+Rust macOS service + SwiftUI iOS client. Version 0.6 development build.
 
 ## Features
 
@@ -38,6 +38,8 @@ The daemon publishes a private discovery file at `~/Library/Application Support/
 The app searches every session on the default tmux server (or the server selected by an `AGENTMUX_TMUX` wrapper). Window names do not need to contain an Agent name. Plain shell windows are hidden, and split windows expose their individual Agents. Discovery includes running Agents outside file roots; the file API and creation of new sessions remain restricted to approved roots.
 
 Open an Agent window to operate its original process. You do **not** need to create it through AgentMux or select a history file before sending. Type `/` for supported command suggestions. Standard numbered Codex/Claude menus and Pi arrow menus appear as selectable cards: tapping a row navigates only; **confirm** executes the selected option. Unknown screens stay on the Mac. Avoid typing from both devices at once.
+
+Cards handle wrapped descriptions and follow-up dialogs such as Codex's reasoning intensity picker. Visible options are marked as a subset; previous/next controls and supported search fields reach other choices. Actions come from the current dialog's keyboard hints and are revalidated before execution. Native Codex plugins expose model-advertised reasoning options directly; Pi SDK dialogs and Claude question/permission hooks return structured forms. See [interaction/plugin research and boundaries](docs/INTERACTION-PLUGINS.md).
 
 History is independent of control. Claude runtime metadata can identify its current log; otherwise select the actual current conversation from project-scoped records. AgentMux does not guess from the most recently modified log. Selecting history does not resume, replace, or change the running Agent.
 
@@ -92,6 +94,8 @@ node scripts/test-pi-extension.mjs
 python3 scripts/test-pi-load.py
 # Real offline Pi menu test; no model request:
 python3 scripts/test-real-pi-tui.py
+python3 scripts/test-real-pi-tui.py --narrow
+python3 scripts/test-real-pi-tui.py --sdk-dialogs
 # Packaged Claude/Codex plugin protocol and Rust API fixtures:
 python3 scripts/package-plugins.py
 npm ci --ignore-scripts --prefix dist/plugins/agentmux-claude

@@ -95,6 +95,13 @@ with tempfile.TemporaryDirectory(prefix='agentmux-manual-') as temporary:
             assert not any(r['kind']=='model' for r in records(provider))
             assert action('menu_confirm',menu_id=menu['id'])[0]==409
             assert action('menu_confirm',menu_id=updated['id'])[0]==200
+            if provider=='codex':
+                followup=wait(lambda: (m if m and m['id']!=updated['id'] else None) if (m:=snapshot().get('interaction')) else None)
+                assert not any(r['kind']=='model' for r in records(provider)), 'Model picker must not skip the thinking step'
+                assert action('menu_select',menu_id=followup['id'],choice=2)[0]==200
+                followup=wait(lambda: (m if m and m['options'][2]['selected'] else None) if (m:=snapshot().get('interaction')) else None)
+                assert action('menu_action',menu_id=followup['id'],control_id='forged-control')[0]==400
+                assert action('menu_action',menu_id=followup['id'],control_id='key:s')[0]==200
             wait(lambda:any(r['kind']=='model' and r['value']=='Model C' for r in records(provider)))
             wait(lambda:snapshot()['capabilities']['message'])
             assert action('message',text='/ask',request_id='approval-menu')[0]==200

@@ -4,27 +4,44 @@ import UIKit
 struct AgentMenuCard: View {
     let menu: AgentMenu
     let disabled: Bool
-    let act: (String, Int?) -> Void
+    let act: (String, Int?, String, String) -> Void
+    @State private var query = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("请选择", systemImage: "list.bullet.circle").font(.caption.weight(.semibold)).foregroundStyle(AppTheme.accent)
             Text(menu.title).font(.subheadline.bold())
+            if menu.visibleOnly == true { Text("显示当前可见选项；可继续上下浏览。选择后再确认执行。").font(.caption).foregroundStyle(AppTheme.secondary) }
+            if menu.searchable == true {
+                HStack {
+                    TextField("筛选全部选项", text: $query).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Button("搜索") { act("menu_search", nil, "", query) }
+                }.padding(10).background(AppTheme.background, in: RoundedRectangle(cornerRadius: 10))
+            }
             if !menu.detail.isEmpty, menu.detail != menu.title {
                 DisclosureGroup("查看操作内容") { Text(menu.detail).font(.caption).textSelection(.enabled) }
             }
             ForEach(menu.options) { option in
-                Button { act("menu_select", option.id) } label: {
+                Button { act("menu_select", option.id, "", "") } label: {
                     HStack { Image(systemName: option.selected ? "checkmark.circle.fill" : "circle"); Text(option.label); Spacer() }
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }.buttonStyle(.plain).padding(12).frame(minHeight: 48)
                     .background(option.selected ? AppTheme.accent.opacity(0.12) : AppTheme.elevated.opacity(0.6), in: RoundedRectangle(cornerRadius: 11))
                     .foregroundStyle(option.selected ? AppTheme.accent : AppTheme.text)
             }
-            if let selected = menu.options.first(where: \.selected) {
-                Button("确认：" + selected.label) { act("menu_confirm", nil) }.buttonStyle(PrimaryButtonStyle())
+            if let controls = menu.actions {
+                ForEach(controls) { control in
+                    Button(control.label) { act("menu_action", nil, control.id, "") }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(AppTheme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                }
+            } else {
+                if let selected = menu.options.first(where: \.selected) {
+                    Button("确认：" + selected.label) { act("menu_confirm", nil, "", "") }.buttonStyle(PrimaryButtonStyle())
+                }
+                Button("取消", role: .cancel) { act("menu_cancel", nil, "", "") }.frame(maxWidth: .infinity, minHeight: 44)
             }
-            Button("取消", role: .cancel) { act("menu_cancel", nil) }.frame(maxWidth: .infinity, minHeight: 44)
-        }.padding(16).appPanel().disabled(disabled)
+        }.padding(16).appPanel().disabled(disabled).onAppear { query = menu.query ?? "" }
+            .onChange(of: menu.query) { _, value in query = value ?? "" }
     }
 }
 struct MessageCard: View {

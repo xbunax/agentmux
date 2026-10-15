@@ -14,7 +14,7 @@ for provider in ['codex', 'claude']:
 pi = root / 'agentmux-pi'
 pi.mkdir(exist_ok=True)
 shutil.copy2(repo / 'integrations/pi/agentmux.ts', pi / 'agentmux.ts')
-(pi / 'package.json').write_text(json.dumps({'name':'agentmux-pi', 'version':'0.5.0', 'type':'module', 'pi':{'extensions':['./agentmux.ts']}}, indent=2)+'\n')
+(pi / 'package.json').write_text(json.dumps({'name':'agentmux-pi', 'version':'0.6.0', 'type':'module', 'pi':{'extensions':['./agentmux.ts']}}, indent=2)+'\n')
 claude = root / '.claude-plugin'
 claude.mkdir(exist_ok=True)
 (claude / 'marketplace.json').write_text(json.dumps({'name':'agentmux', 'owner':{'name':'AgentMux contributors'}, 'plugins':[{'name':'agentmux-claude','source':'./agentmux-claude','description':'SSH-backed mobile chat and permission relay for existing Claude Code sessions'}]},indent=2)+'\n')

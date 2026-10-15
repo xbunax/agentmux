@@ -11,8 +11,11 @@ struct ChatMessage: Decodable, Identifiable {
 }
 struct AgentModel: Decodable, Identifiable {
     let id: String; let name: String; let provider: String
+    var reasoningEfforts: [ReasoningChoice]? = nil; var defaultEffort: String? = nil
     var key: String { provider + "/" + id }
+    enum CodingKeys: String, CodingKey { case id, name, provider; case reasoningEfforts = "reasoning_efforts", defaultEffort = "default_effort" }
 }
+struct ReasoningChoice: Decodable, Identifiable { let id: String; let name: String }
 struct SlashCommand: Decodable, Identifiable { var id: String { name }; let name: String; let description: String; let kind: String? }
 struct AgentQuestionOption: Decodable { let label: String; let description: String }
 struct AgentQuestion: Decodable, Identifiable {
@@ -29,7 +32,12 @@ struct Conversation: Decodable, Identifiable {
     var date: Date { Date(timeIntervalSince1970: TimeInterval(modified)) }
 }
 struct AgentMenuChoice: Decodable, Identifiable { let id: Int; let label: String; let selected: Bool }
-struct AgentMenu: Decodable, Identifiable { let id: String; let title: String; let detail: String; let options: [AgentMenuChoice]; let route: String? }
+struct AgentMenuControl: Decodable, Identifiable { let id: String; let label: String }
+struct AgentMenu: Decodable, Identifiable {
+    let id: String; let title: String; let detail: String; let options: [AgentMenuChoice]; let route: String?
+    let actions: [AgentMenuControl]?; let searchable: Bool?; let query: String?; let visibleOnly: Bool?
+    enum CodingKeys: String, CodingKey { case id, title, detail, options, route, actions, searchable, query; case visibleOnly = "visible_only" }
+}
 struct ChatSnapshot: Decodable {
     let messages: [ChatMessage]; let models: [AgentModel]; let commands: [SlashCommand]
     let model: String; let busy: Bool; let alive: Bool; let approvals: [AgentApproval]
@@ -46,9 +54,12 @@ struct ChatAction: Encodable {
     var text = ""; var model = ""; var provider = ""; var requestID = ""; var approved = false
     var agentPID: UInt32?; var conversationID = ""; var answers: [String: [String]] = [:]
     var menuID = ""; var choice: Int?; var route: String?; var attachments: [String] = []
+    var controlID = ""
+    var effort = ""
     enum CodingKeys: String, CodingKey {
-        case action, text, model, provider, approved, answers, choice, route, attachments
+        case action, text, model, provider, approved, answers, choice, route, attachments, effort
         case requestID = "request_id", agentPID = "agent_pid", conversationID = "conversation_id", menuID = "menu_id"
+        case controlID = "control_id"
     }
 }
 
@@ -82,6 +93,7 @@ struct ChatView: View {
     @State private var photoPicker = false
     @State private var photos: [PhotosPickerItem] = []
     @State private var modelSearch = ""
+    @State private var selectedModel: AgentModel?
     @State private var commandSearch = ""
     @State private var pendingID = UUID().uuidString
     @State private var attemptedText: String?
@@ -155,7 +167,7 @@ struct ChatView: View {
                     } label: { Image(systemName: "ellipsis.circle").font(.title3) }.accessibilityLabel("会话操作")
                 }
             }
-            .sheet(isPresented: $models) { modelPanel }
+            .sheet(isPresented: $models, onDismiss: { selectedModel = nil; modelSearch = "" }) { modelPanel }
             .sheet(isPresented: $commands) { commandPanel }
             .sheet(isPresented: $conversations) { conversationPanel }
             .sheet(isPresented: $sessionPicker) { sessionPanel }
@@ -210,8 +222,8 @@ struct ChatView: View {
                         HStack(spacing: 9) { ProgressView().controlSize(.small); Text("\(session.displayName) 正在工作…").font(.caption).foregroundStyle(AppTheme.secondary) }.padding(12)
                     }
                     if let menu = snapshot?.interaction {
-                        AgentMenuCard(menu: menu, disabled: sending) { action, choice in
-                            Task { await apply(ChatAction(action: action, menuID: menu.id, choice: choice, route: menu.route)) }
+                        AgentMenuCard(menu: menu, disabled: sending) { action, choice, control, text in
+                            Task { await apply(ChatAction(action: action, text: text, menuID: menu.id, choice: choice, route: menu.route, controlID: control)) }
                         }
                     }
                     ForEach(snapshot?.approvals ?? []) { approval in
@@ -298,21 +310,47 @@ struct ChatView: View {
     }
     private var modelPanel: some View {
         NavigationStack {
-            List((snapshot?.models ?? []).filter { modelSearch.isEmpty || ($0.name + " " + $0.id + " " + $0.provider).localizedCaseInsensitiveContains(modelSearch) }, id: \.key) { model in
-                Button {
-                    models = false
-                    Task { await apply(ChatAction(action: "model", model: model.id, provider: model.provider)) }
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: snapshot?.model == model.id ? "checkmark.circle.fill" : "circle").foregroundStyle(snapshot?.model == model.id ? AppTheme.accent : AppTheme.secondary)
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(model.name.isEmpty ? model.id : model.name).font(.body).foregroundStyle(AppTheme.text)
-                            Text(model.provider.isEmpty ? model.id : model.provider + " / " + model.id).font(.caption).foregroundStyle(AppTheme.secondary)
-                        }
-                    }.padding(.vertical, 5)
-                }.listRowBackground(AppTheme.surface).disabled(sending || snapshot?.busy == true)
-            }.appList().searchable(text: $modelSearch, prompt: "搜索模型").navigationTitle("选择模型").navigationBarTitleDisplayMode(.inline)
-                .toolbar { Button("完成") { models = false } }
+            List {
+                if let selectedModel {
+                    Section {
+                        Button { self.selectedModel = nil } label: { Label("重新选择模型", systemImage: "chevron.left") }
+                        Text(selectedModel.name.isEmpty ? selectedModel.id : selectedModel.name).font(.headline)
+                    }.listRowBackground(AppTheme.surface)
+                    ForEach(selectedModel.reasoningEfforts ?? []) { effort in
+                        Button {
+                            models = false; self.selectedModel = nil
+                            Task { await apply(ChatAction(action: "model", model: selectedModel.id, provider: selectedModel.provider, effort: effort.id)) }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(effort.id).font(.body.weight(.semibold))
+                                Text(effort.name).font(.caption).foregroundStyle(AppTheme.secondary)
+                                if effort.id == selectedModel.defaultEffort { Text("Agent 默认值").font(.caption2).foregroundStyle(AppTheme.accent) }
+                            }.padding(.vertical, 6)
+                        }.listRowBackground(AppTheme.surface).disabled(sending)
+                    }
+                } else {
+                    ForEach((snapshot?.models ?? []).filter { modelSearch.isEmpty || ($0.name + " " + $0.id + " " + $0.provider).localizedCaseInsensitiveContains(modelSearch) }, id: \.key) { model in
+                        Button {
+                            if model.reasoningEfforts?.isEmpty == false { selectedModel = model }
+                            else {
+                                models = false
+                                Task { await apply(ChatAction(action: "model", model: model.id, provider: model.provider)) }
+                            }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: snapshot?.model == model.id ? "checkmark.circle.fill" : "circle").foregroundStyle(AppTheme.accent)
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(model.name.isEmpty ? model.id : model.name).foregroundStyle(AppTheme.text)
+                                    Text(model.id).font(.caption).foregroundStyle(AppTheme.secondary)
+                                }
+                            }.padding(.vertical, 5)
+                        }.listRowBackground(AppTheme.surface).disabled(sending || snapshot?.busy == true)
+                    }
+                }
+            }.appList().searchable(text: $modelSearch, prompt: "搜索模型")
+                .navigationTitle(selectedModel == nil ? "选择模型" : "选择思考强度").navigationBarTitleDisplayMode(.inline)
+                .toolbar { Button("完成") { models = false; selectedModel = nil } }
+
         }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
     }
     private var commandPanel: some View {

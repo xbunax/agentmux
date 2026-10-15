@@ -281,6 +281,8 @@ pub async fn action(
             "menu_select",
             "menu_confirm",
             "menu_cancel",
+            "menu_action",
+            "menu_search",
             "abort",
         ]
         .contains(&value["action"].as_str().unwrap_or_default())

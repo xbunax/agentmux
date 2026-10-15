@@ -7,15 +7,17 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startBridge, agentPID, invalid } from './shared/bridge.mjs';
+import { HookInteractions } from './interactions.mjs';
 
 const nativePID = agentPID('claude');
 const state = { native_session_id: '', cwd: process.cwd(), transcript_path: undefined, messages: [], busy: false, revision: 0 };
 const approvals = new Map();
+const hookInteractions = new HookInteractions();
 const imageFiles = new Map();
 let connected = false;
 const channelEnabled = process.env.AGENTMUX_CLAUDE_CHANNEL === "1";
 let bridge;
-const mcp = new Server({ name: 'agentmux', version: '0.5.0' }, {
+const mcp = new Server({ name: 'agentmux', version: '0.6.0' }, {
     capabilities: { tools: {}, experimental: { 'claude/channel': {}, 'claude/channel/permission': {} } },
     instructions: 'AgentMux is a trusted local bridge to the user over authenticated SSH. Channel events with chat_id="owner" are user messages. Use the reply tool with chat_id="owner" to return your complete answer. Tool approval decisions are supplied by the human through the permission channel; do not invent or request approvals via the reply tool.',
 });
@@ -68,12 +70,13 @@ bridge = await startBridge({
     snapshot: async () => {
         refreshIdentity(); prune();
         return { messages: state.messages, transcript_path: state.transcript_path, native_session_id: state.native_session_id,
-            busy: state.busy, alive: connected && channelEnabled, revision: state.revision, approvals: [...approvals.values()].map(a => a.view),
+            busy: state.busy, alive: connected && (channelEnabled || hookInteractions.views.length > 0), revision: state.revision, approvals: [...hookInteractions.views,...[...approvals.values()].map(a => a.view)],
             commands: [{ name: 'status', description: '查看原会话和 Channel 连接状态', kind: 'command' }],
-            capabilities: { message: connected && channelEnabled, abort: false, models: false, approvals: connected && channelEnabled },
+            capabilities: { message: connected && channelEnabled, abort: false, models: false, approvals: connected },
             notice: 'Claude Channel：消息与工具审批在原会话处理。需按插件说明启用开发 Channel；终端专有命令不通过 Channel 执行。' };
     },
     action: async action => {
+        if (connected && action.action === 'approval' && hookInteractions.answer(action)) return {submitted:true};
         if (!connected || !channelEnabled) throw invalid('请使用插件的 launch.sh 显式启用 Claude Channel；当前 tmux 窗口仍可直接操作。');
         if (action.action === 'message') {
             if (action.text.startsWith('/')) throw invalid('Channel 不执行终端内置 slash 命令；请使用补全列表中的插件操作。', 400);
@@ -94,16 +97,20 @@ bridge = await startBridge({
             message('system', `Claude Code · ${state.native_session_id || '等待会话登记'}\n${state.cwd}\nChannel 传输已连接。`, 'plugin-status');
         } else throw invalid('Claude Channel 未公开此操作；请在 Mac 中处理。', 400);
     },
-    event: async event => {
+    event: async (event, signal) => {
         if (resolve(event.cwd ?? '') !== resolve(state.cwd)) throw invalid('Hook project mismatch', 400);
         if (typeof event.session_id !== 'string') throw invalid('Session ID required', 400);
         state.native_session_id = event.session_id;
+        // Use exactly one permission transport per session; Channel already owns
+        // the request when enabled. Question hooks remain independent of Channel.
+        if (event.hook_event_name === 'PermissionRequest' && channelEnabled) return {};
+        if (['PermissionRequest','PreToolUse'].includes(event.hook_event_name)) return hookInteractions.open(event,signal);
         if (typeof event.transcript_path === 'string') state.transcript_path = event.transcript_path;
         if (event.hook_event_name === 'UserPromptSubmit') state.busy = true;
-        if (['Stop', 'SessionEnd'].includes(event.hook_event_name)) { state.busy = false; approvals.clear(); }
+        if (['Stop', 'SessionEnd'].includes(event.hook_event_name)) { state.busy = false; approvals.clear(); hookInteractions.close(); }
         state.revision++;
         return {};
-    }, close: async () => { connected = false; await mcp.close(); },
+    }, close: async () => { connected = false; hookInteractions.close(); await mcp.close(); },
 });
 mcp.onclose = () => { connected = false; bridge.shutdown().then(() => process.exit(0)); };
 mcp.oninitialized = () => { connected = true; };

@@ -1,0 +1,7 @@
+{
+  "provider": "codex",
+  "cursor_x": 38,
+  "cursor_y": 16,
+  "cursor_visible": false,
+  "raw": "  \u001b[1mSelect Reasoning Level for GPT-6.1-Sol\u001b[0m\u001b[48;2;42;45;50m\n\n\n  1. Low (default)    \u001b[2mFast responses with\u001b[0m\u001b[48;2;42;45;50m\n                      \u001b[2mlighter reasoning\u001b[0m\u001b[48;2;42;45;50m\n  2. Medium           \u001b[2mBalances speed and\u001b[0m\u001b[48;2;42;45;50m\n                      \u001b[2mreasoning depth for\u001b[0m\u001b[48;2;42;45;50m\n                      \u001b[2meveryday tasks\u001b[0m\u001b[48;2;42;45;50m\n\u001b[1m\u001b[38;2;0;0;46m\u001b[48;2;99;168;248m› 3. High (current)   \u001b[0m\u001b[38;2;0;0;46m\u001b[48;2;99;168;248mGreater reasoning depth\u001b[1m\n                      \u001b[0m\u001b[38;2;0;0;46m\u001b[48;2;99;168;248mfor complex problems\u001b[1m\n\u001b[0m\u001b[48;2;42;45;50m  4. Extra high       \u001b[2mExtra high reasoning\u001b[0m\u001b[48;2;42;45;50m\n                      \u001b[2mdepth for complex\u001b[0m\u001b[48;2;42;45;50m\n                      \u001b[2mproblems\u001b[0m\u001b[48;2;42;45;50m\n  5. More reasoning…  \u001b[2mMax and Ultra consume\u001b[0m\u001b[48;2;42;45;50m\n                      \u001b[2musage limits faster\u001b[0m\u001b[48;2;42;45;50m\n\n\u001b[49m  \u001b[1m\u001b[38;2;201;209;217menter\u001b[0;2m default · \u001b[0;1m\u001b[38;2;201;209;217ms\u001b[0;2m session · \u001b[0;1m\u001b[38;2;201;209;217mesc\u001b[0;2m back"
+}

@@ -25,9 +25,10 @@ async function inspect() {
     if (status === 'notLoaded') throw invalid('此 Codex 会话已不在运行，请在 Codex 中恢复后再连接。');
     return { thread, busy: status === 'active' };
 }
-function queue(text) {
+function queue(text, files = []) {
     return new Promise((resolvePromise, reject) => {
         const args = ['queue', '--thread', state.session_id, '--message', text];
+        for (const file of files) if (file.mime_type?.startsWith('image/')) args.push('--image', file.path);
         if (process.env.AGENTMUX_CODEX_SOCKET) args.push('--remote', 'unix://' + process.env.AGENTMUX_CODEX_SOCKET);
         if (modelOverride) args.push('--model', modelOverride);
         const child = spawn(rpc.executable, args, { cwd: state.cwd, stdio: ['ignore', 'pipe', 'ignore'] });
@@ -70,7 +71,7 @@ bridge = await startBridge({
         state.busy = (await inspect()).busy;
         if (action.action === 'message') {
             if (action.text.startsWith('/')) throw invalid('请从补全列表选择插件支持的命令；不会把终端命令作为聊天文本发送。', 400);
-            await queue(action.text);
+            await queue(action.text, action.uploaded_files);
         } else if (action.action === 'model') {
             if (!(await models()).some(m => m.id === action.model)) throw invalid('此模型不在 Codex 的可用列表中。', 400);
             modelOverride = action.model;

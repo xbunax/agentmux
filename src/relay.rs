@@ -180,12 +180,16 @@ pub struct Action {
     menu_id: String,
     #[serde(default)]
     choice: Option<usize>,
+    #[serde(default)]
+    attachments: Vec<String>,
+    #[serde(skip_deserializing, default)]
+    uploaded_files: Vec<attachments::Attachment>,
 }
 pub async fn action(
     State(app): State<Shared>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(request): Json<Action>,
+    Json(mut request): Json<Action>,
 ) -> Result<Json<Value>> {
     authorize(&headers, &app)?;
     let session = tmux_agents::find(&app, &id).await?;
@@ -193,6 +197,12 @@ pub async fn action(
         return Err(conflict(
             "Agent process changed. Reopen this window before sending.",
         ));
+    }
+    if request.action == "message" {
+        (request.text, request.uploaded_files) =
+            attachments::prepare(&app, &request.text, &request.attachments).await?;
+    } else if !request.attachments.is_empty() {
+        return Err(bad("Only messages accept attachments"));
     }
     if let Some(response) =
         pi_bridge::action(&session, serde_json::to_value(&request).map_err(internal)?).await?

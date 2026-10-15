@@ -5,6 +5,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export default function agentmux(pi: ExtensionAPI) {
@@ -74,9 +75,21 @@ export default function agentmux(pi: ExtensionAPI) {
                     if (delivered.size >= 1024 || sending || !ctx.isIdle() || waiting || ctx.hasPendingMessages() || ctx.ui.getEditorText()) {
                         reply(409, { error: "Pi is busy, waiting for a dialog, or the Mac editor has a draft" }); return;
                     }
+                    const images = [];
+                    for (const file of action.uploaded_files ?? []) {
+                        if (typeof file.mime_type === "string" && file.mime_type.startsWith("image/")) {
+                            const data = await readFile(file.path);
+                            if (data.length > 8 * 1024 * 1024) throw new Error("Attachment too large");
+                            images.push({ type: "image" as const, data: data.toString("base64"), mimeType: file.mime_type });
+                        }
+                    }
+                    // File reads yield; recheck the original editor before submitting any input.
+                    if (sending || !ctx.isIdle() || waiting || ctx.hasPendingMessages() || ctx.ui.getEditorText()) {
+                        reply(409, { error: "Pi input state changed while loading attachments" }); return;
+                    }
                     sending = true;
                     delivered.set(action.request_id, { text: action.text, accepted: false });
-                    pi.sendUserMessage(action.text);
+                    pi.sendUserMessage(images.length ? [{ type: "text", text: action.text }, ...images] : action.text);
                     delivered.set(action.request_id, { text: action.text, accepted: true });
                 } else if (action.action === "abort") { ctx.abort(); sending = false; }
                 else if (action.action === "model") {

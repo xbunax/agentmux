@@ -3,25 +3,53 @@ import CryptoKit
 
 struct PairingStatus: View {
     @EnvironmentObject var client: Client
+    var manage = true
     @State private var connectingSSH = false
     @State private var forget = false
+    @State private var details = false
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             if let mac = client.paired {
-                Label(mac.host, systemImage: "lock.shield.fill").foregroundStyle(.green)
-                Text("SSH 加密 · 主机密钥已固定").font(.caption).foregroundStyle(.secondary)
-                Button("断开并移除此设备", role: .destructive) { forget = true }
+                HStack(spacing: 12) {
+                    Image(systemName: "desktopcomputer").font(.title3).foregroundStyle(AppTheme.accent)
+                        .frame(width: 44, height: 44).background(AppTheme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 13))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(mac.host).font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.text).lineLimit(1)
+                        Text(mac.username + " · SSH").font(.caption).foregroundStyle(AppTheme.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    StatusBadge(title: client.isConnected ? "已连接" : "已保存", color: client.isConnected ? AppTheme.accent : AppTheme.secondary)
+                }
+                if manage {
+                    DisclosureGroup("连接详情", isExpanded: $details) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            LabeledContent("SSH 端口", value: String(mac.port))
+                            Text(sshFingerprint(mac.hostKey)).font(.caption.monospaced()).textSelection(.enabled)
+                            Text("主机密钥已固定，凭据保存在此设备的钥匙串。").font(.caption).foregroundStyle(AppTheme.secondary)
+                        }.padding(.top, 8)
+                    }.font(.subheadline)
+                    Button("移除此 Mac", role: .destructive) { forget = true }.font(.subheadline).frame(minHeight: 44)
+                }
             } else {
-                Text("登录 Mac 的 SSH，自动发现 AgentMux 和正在运行的 Agent。").font(.subheadline)
-                Button { connectingSSH = true } label: {
-                    Label("通过 SSH 连接 Mac", systemImage: "network")
-                }.buttonStyle(.borderedProminent)
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(spacing: -8) {
+                        AgentAvatar(command: "codex", size: 48)
+                        AgentAvatar(command: "claude", size: 48)
+                        AgentAvatar(command: "pi", size: 48)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("你的 Agent，随时在线").font(.title2.weight(.semibold)).foregroundStyle(AppTheme.text)
+                        Text("连接 Mac，在手机上继续对话、查看进展和确认操作。").font(.subheadline).foregroundStyle(AppTheme.secondary)
+                    }
+                    Button { connectingSSH = true } label: { Label("连接 Mac", systemImage: "plus") }.buttonStyle(PrimaryButtonStyle())
+                    Label("通过 SSH 加密连接", systemImage: "lock.shield").font(.caption).foregroundStyle(AppTheme.secondary)
+                }.padding(.vertical, 8)
             }
-        }
-        .sheet(isPresented: $connectingSSH) { SSHConnectionSheet() }
-        .confirmationDialog("移除此设备的 AgentMux 凭据并断开连接？", isPresented: $forget) {
-            Button("移除并断开", role: .destructive) { Task { await client.forget() } }
-        }
+        }.padding(16).appPanel()
+            .sheet(isPresented: $connectingSSH) { SSHConnectionSheet() }
+            .confirmationDialog("移除此 Mac 的设备凭据并断开连接？", isPresented: $forget) {
+                Button("移除并断开", role: .destructive) { Task { await client.forget() } }
+            }
     }
 }
 

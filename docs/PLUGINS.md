@@ -70,3 +70,13 @@ Plugins listen on random loopback ports with private `0600` manifests under `~/L
 The iOS list shows active connections under **插件连接 · 原有会话**. A verified matching tmux entry is deduplicated. A stopped/unavailable plugin must not be confused with a stopped Agent: the original tmux process remains separately discoverable. Refresh the list after activation.
 
 Provider commands exposed by a native plugin and terminal-only slash commands use different routes. Suggestions cover advertised/supported commands, not every custom skill. Unsupported requests return an error rather than being sent as ordinary chat text. Finish daemon-owned tasks before restarting AgentMux; externally started tmux Agents are not its children.
+
+## Chat attachments (version 0.5)
+
+Update/reload the bundles after updating the Mac daemon and iOS app. Chat uploads land in the service's private `/tmp/agentmux-uploads-*` directory; sending forwards the caption and receipt paths to the original session. Ordinary files remain available to the Agent's file tools.
+
+- Codex adds `--image <uploaded path>` to `codex queue` for image receipts; the target remains the existing hook session ID.
+- Pi passes image content through `sendUserMessage` in the same SDK process.
+- Claude Channel messages include attachment IDs. The MCP `read_attachment` tool returns image content only for images delivered to that plugin; it does not accept an arbitrary file path. Claude must invoke the tool to inspect an image.
+
+Without a native plugin, tmux forwarding still delivers caption and uploaded paths together. Whether an Agent can inspect an image from a file reference depends on its tools/model. Terminal attachment-picker keystrokes are not synthesized. See [attachment limits and temporary storage](../README.md#chat-attachments).

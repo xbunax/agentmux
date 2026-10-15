@@ -21,6 +21,13 @@ struct SSHConnectionSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Image(systemName: "desktopcomputer.and.arrow.down").font(.largeTitle).foregroundStyle(AppTheme.accent)
+                        Text("连接你的 Mac").font(.title2.weight(.semibold))
+                        Text("登录后自动发现 AgentMux，让手机接上正在进行的工作。").font(.subheadline).foregroundStyle(AppTheme.secondary)
+                    }.padding(.vertical, 12)
+                }.listRowBackground(Color.clear)
                 Section("Mac SSH") {
                     TextField("IP 地址或主机名", text: $host)
                         .keyboardType(.URL).textContentType(.URL)
@@ -30,7 +37,10 @@ struct SSHConnectionSheet: View {
                     .disabled(busy || hostKey != nil)
 
                 Section("登录方式") {
-                    Toggle("使用 SSH 私钥", isOn: $usePrivateKey)
+                    Picker("登录方式", selection: $usePrivateKey) {
+                        Text("密码").tag(false)
+                        Text("SSH 私钥").tag(true)
+                    }.pickerStyle(.segmented)
                     if usePrivateKey {
                         Button("导入私钥文件") { importing = true }
                         TextEditor(text: $privateKey).font(.caption.monospaced()).frame(minHeight: 100)
@@ -58,12 +68,13 @@ struct SSHConnectionSheet: View {
                             if busy { ProgressView() }
                             Text(busy ? "正在连接并发现服务…" : (hostKey == nil ? "连接 SSH" : "信任主机并连接"))
                         }
-                    }.disabled(busy || !validInput)
+                    }.buttonStyle(PrimaryButtonStyle()).disabled(busy || !validInput).opacity(validInput ? 1 : 0.5)
                     Text("Mac 需开启远程登录并运行 agentmuxd。SSH 登录凭据和设备凭据保存在此 iPhone 的钥匙串中。").font(.caption).foregroundStyle(.secondary)
                     if let error { Text(error).foregroundStyle(.red).font(.caption) }
                 }
             }
-            .navigationTitle("SSH 连接")
+            .appList()
+            .navigationTitle("添加 Mac").navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("关闭") { dismiss() } }
             .onDisappear {
                 operation?.cancel()

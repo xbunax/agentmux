@@ -2,6 +2,7 @@
 """Deterministic native-protocol fixture. No network or LLM calls."""
 
 import json
+import os
 import sys
 
 kind = "codex" if "app-server" in sys.argv else "pi" if "rpc" in sys.argv else "claude"
@@ -16,6 +17,9 @@ for line in sys.stdin:
         value = json.loads(line)
     except json.JSONDecodeError:
         continue
+    if destination := os.environ.get("AGENTMUX_FIXTURE_LOG"):
+        with open(destination + "." + kind, "a") as output:
+            output.write(json.dumps(value) + "\n")
     if kind == "pi":
         command = value.get("type")
         data = {}

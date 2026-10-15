@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startBridge, agentPID, invalid } from './shared/bridge.mjs';
@@ -10,10 +11,11 @@ import { startBridge, agentPID, invalid } from './shared/bridge.mjs';
 const nativePID = agentPID('claude');
 const state = { native_session_id: '', cwd: process.cwd(), transcript_path: undefined, messages: [], busy: false, revision: 0 };
 const approvals = new Map();
+const imageFiles = new Map();
 let connected = false;
 const channelEnabled = process.env.AGENTMUX_CLAUDE_CHANNEL === "1";
 let bridge;
-const mcp = new Server({ name: 'agentmux', version: '0.4.0' }, {
+const mcp = new Server({ name: 'agentmux', version: '0.5.0' }, {
     capabilities: { tools: {}, experimental: { 'claude/channel': {}, 'claude/channel/permission': {} } },
     instructions: 'AgentMux is a trusted local bridge to the user over authenticated SSH. Channel events with chat_id="owner" are user messages. Use the reply tool with chat_id="owner" to return your complete answer. Tool approval decisions are supplied by the human through the permission channel; do not invent or request approvals via the reply tool.',
 });
@@ -36,8 +38,18 @@ function refreshIdentity() {
     } catch { /* hooks supply identity when runtime metadata is unavailable */ }
 }
 function prune() { for (const [id, approval] of approvals) if (Date.now() >= approval.expires) approvals.delete(id); }
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'reply', description: 'Send the answer to the user in AgentMux.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string', enum: ['owner'] }, text: { type: 'string' } }, required: ['chat_id', 'text'], additionalProperties: false } }] }));
+mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
+    { name: 'reply', description: 'Send the answer to the user in AgentMux.', inputSchema: { type: 'object', properties: { chat_id: { type: 'string', enum: ['owner'] }, text: { type: 'string' } }, required: ['chat_id', 'text'], additionalProperties: false } },
+    { name: 'read_attachment', description: 'View an image attached by the user. Use its attachment ID from the incoming message; returns image content, not a file path.', inputSchema: { type: 'object', properties: { file_id: { type: 'string' } }, required: ['file_id'], additionalProperties: false } },
+] }));
 mcp.setRequestHandler(CallToolRequestSchema, async request => {
+    if (request.params.name === 'read_attachment') {
+        const file = imageFiles.get(request.params.arguments?.file_id);
+        if (!file) throw invalid('Unknown image attachment', 404);
+        const data = await readFile(file.path);
+        if (data.length > 8 * 1024 * 1024) throw invalid('Attachment too large', 413);
+        return { content: [{ type: 'image', data: data.toString('base64'), mimeType: file.mime_type }] };
+    }
     if (request.params.name !== 'reply' || request.params.arguments?.chat_id !== 'owner' || typeof request.params.arguments?.text !== 'string') throw invalid('Invalid reply', 400);
     message('assistant', request.params.arguments.text, `reply-${request.params._meta?.progressToken ?? crypto.randomUUID()}`);
     state.busy = false;
@@ -65,7 +77,12 @@ bridge = await startBridge({
         if (!connected || !channelEnabled) throw invalid('请使用插件的 launch.sh 显式启用 Claude Channel；当前 tmux 窗口仍可直接操作。');
         if (action.action === 'message') {
             if (action.text.startsWith('/')) throw invalid('Channel 不执行终端内置 slash 命令；请使用补全列表中的插件操作。', 400);
-            await mcp.notification({ method: 'notifications/claude/channel', params: { content: action.text, meta: { chat_id: 'owner', request_id: action.request_id, source: 'agentmux-ssh' } } });
+            for (const file of action.uploaded_files ?? []) {
+                if (file.mime_type?.startsWith('image/')) imageFiles.set(file.id, file);
+            }
+            while (imageFiles.size > 128) imageFiles.delete(imageFiles.keys().next().value);
+            const content = action.text + ((action.uploaded_files ?? []).some(file => file.mime_type?.startsWith('image/')) ? '\nUse the read_attachment tool with the attachment ID to view attached images.' : '');
+            await mcp.notification({ method: 'notifications/claude/channel', params: { content, meta: { chat_id: 'owner', request_id: action.request_id, source: 'agentmux-ssh' } } });
             message('user', action.text, action.request_id); state.busy = true;
         } else if (action.action === 'approval') {
             prune(); const approval = approvals.get(action.request_id);

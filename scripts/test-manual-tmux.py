@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 repo=Path(__file__).resolve().parent.parent
@@ -25,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='agentmux-manual-') as temporary:
     server='agentmux-manual-'+secrets.token_hex(6)
     wrapper=root/'tmux';wrapper.write_text(f'#!/bin/sh\nexec "{tmux}" -f /dev/null -L "{server}" "$@"\n');wrapper.chmod(0o700)
     def run(*args): return subprocess.check_output([str(wrapper),*args],text=True).strip()
-    agents={};panes={};events={}
+    agents={};panes={};events={};upload_storage=set()
     for provider in ['codex','claude','pi']:
         agents[provider]=str(root/provider);events[provider]=root/(provider+'.jsonl')
         Path(agents[provider]).write_text(f'#!/bin/sh\n"{sys.executable}" "{repo / "scripts/fake-tui-agent.py"}" {provider} "{events[provider]}"\n');Path(agents[provider]).chmod(0o700)
@@ -71,6 +72,15 @@ with tempfile.TemporaryDirectory(prefix='agentmux-manual-') as temporary:
             assert action('message',**message)[0]==200
             wait(lambda:any(r.get('text')==message['text'] for r in records(provider)))
             assert sum(r.get('text')==message['text'] for r in records(provider))==1
+            upload_id=str(uuid.uuid4())
+            upload_request=urllib.request.Request(f'http://127.0.0.1:{port}/v1/attachments/{upload_id}?name=phone-note.txt',data=b'notes from phone',method='PUT',headers={'Authorization':'Bearer '+token})
+            with urllib.request.urlopen(upload_request,timeout=10) as response: upload=json.load(response)
+            upload_storage.add(Path(upload['path']).parents[2])
+            assert upload['path'].startswith('/tmp/') and Path(upload['path']).read_bytes()==b'notes from phone'
+            assert action('message',text='Read this note',attachments=[upload_id],request_id='file-'+provider)[0]==200
+            wait(lambda:any(upload['path'] in r.get('text','') and r.get('text','').startswith('Read this note\n\n') for r in records(provider)))
+            assert action('message',text='Read this note',attachments=[upload_id],request_id='file-'+provider)[0]==200
+            assert sum(upload['path'] in r.get('text','') for r in records(provider))==1
             run('send-keys','-t',pane,'-l','Mac draft')
             wait(lambda:not snapshot()['capabilities']['message'])
             assert action('message',text='must not overwrite',request_id='draft')[0]==409
@@ -110,3 +120,4 @@ with tempfile.TemporaryDirectory(prefix='agentmux-manual-') as temporary:
         except subprocess.TimeoutExpired:daemon.kill();daemon.wait()
         subprocess.run([tmux,'-L',server,'kill-server'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         log.close()
+        for directory in upload_storage: shutil.rmtree(directory)

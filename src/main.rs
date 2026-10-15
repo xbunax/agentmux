@@ -1,4 +1,5 @@
 mod agents;
+mod attachments;
 mod config;
 mod discovery;
 mod pairing;
@@ -61,6 +62,7 @@ struct App {
     pairing: Arc<pairing::Pairing>,
     managed: agents::Manager,
     relay: relay::Manager,
+    attachments: attachments::Store,
 }
 type Shared = Arc<App>;
 fn authorize(headers: &HeaderMap, app: &App) -> Result<()> {
@@ -425,6 +427,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         pairing: pairing.clone(),
         managed: agents::Manager::default(),
         relay: relay::Manager::default(),
+        attachments: attachments::Store::temporary(&state_dir)?,
     });
     let router = Router::new()
         .route("/v1/pair/issue", post(pairing::issue))
@@ -432,6 +435,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .route("/v1/devices", get(pairing::devices).post(pairing::enroll))
         .route("/v1/devices/{id}", axum::routing::delete(pairing::revoke))
         .route("/v1/plugins", get(plugin_bridge::list))
+        .route(
+            "/v1/attachments/{id}",
+            get(attachments::download).put(attachments::upload),
+        )
         .route("/v1/plugins/{id}/chat", get(plugin_bridge::snapshot))
         .route("/v1/plugins/{id}/actions", post(plugin_bridge::action))
         .route("/v1/managed", get(agents::list).post(agents::create))
@@ -504,6 +511,7 @@ mod tests {
             pairing: pairing::Pairing::load(tempfile::tempdir().unwrap().keep()).unwrap(),
             managed: agents::Manager::default(),
             relay: relay::Manager::default(),
+            attachments: attachments::Store::new(PathBuf::new()),
         };
         let mut headers = HeaderMap::new();
         assert!(authorize(&headers, &app).is_err());

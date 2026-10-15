@@ -1,18 +1,20 @@
 # AgentMux
 
-Rust macOS service + SwiftUI iOS client. Version 0.4 development build.
+Rust macOS service + SwiftUI iOS client. Version 0.5 development build.
 
 ## Features
 
 - Connect with an existing Mac SSH login (password or OpenSSH private key); verify the host fingerprint, then discover AgentMux and enroll automatically. No QR required. Credentials are saved in iOS Keychain.
 - Discover Codex, Claude Code and Pi across all sessions on the selected tmux server. Show Agent windows only; group split panes by window.
-- Chat interface with Markdown messages, tool status/result cards, model selection, stop controls, approvals and question forms. No terminal screen in the app.
+- Telegram-inspired conversation list, chat bubbles, attachment tray, slash suggestions and selection cards. Search/pin Agent conversations, switch sessions from the chat header, and choose dark/light/system appearance.
+- Rich messages with Markdown, copyable code blocks, formatted CLI commands, collapsible tool cards, model selection, stop controls, approvals and question forms.
 - New native sessions use Codex app-server, Claude Code bidirectional stream-json and Pi JSONL RPC.
 - Manually started tmux Agents stay in their original processes. Send messages without first binding history, complete supported slash commands, operate recognized selection menus, and request cancellation.
 - Optional Codex, Claude Code and Pi plugins expose native controls for existing sessions. Their activation and capabilities differ; see [plugin setup](docs/PLUGINS.md).
 - Revocable per-device credentials saved in iOS Keychain and hashed on the Mac.
 - iOS settings for default directory and authorized roots, revision conflicts and atomic configuration updates.
 - File listing and upload/download up to 8 MiB, without overwrite; capability-confined file access.
+- Send photos/files from the chat paperclip: private Mac `/tmp` uploads are forwarded to the selected original Agent and displayed as attachment cards.
 - Unsigned arm64 device IPA build script.
 
 ## Quick start: Mac → SSH → iPhone
@@ -49,6 +51,16 @@ pi -e /absolute/path/to/agentmux/integrations/pi/agentmux.ts
 
 For loading into an already-running Pi with `/reload`, Codex/Claude plugins, capability details and protocol research, see [plugin setup](docs/PLUGINS.md) and [Agent integration](docs/AGENT-INTEGRATION.md).
 
+## Chat attachments
+
+Tap the paperclip to select photos or files, optionally add a caption, then send. Uploads default to `/tmp/agentmux-uploads-<uid>-<state-hash>/<attachment-id>/content/<filename>` on the Mac; they do not require adding `/tmp` to the file-browser roots. Only authenticated clients can upload/download receipts. The private directory is separate for each daemon state; files use mode `0600`.
+
+The selected Agent receives the caption and actual uploaded paths in one message. Manually started tmux sessions use their original guarded input route; Agents can read ordinary files through their own tools. Native managed sessions receive images through Codex local-image input, Claude image blocks, or Pi RPC images. Updated plugins use Codex queue images, Pi SDK image content, and Claude's `read_attachment` MCP tool. Actual image interpretation depends on the provider/model. This does not simulate a terminal's interactive attachment picker.
+
+Limits: six attachments per message, 8 MiB per file, 24 MiB per message; photos are resized to at most 2560 pixels and converted to JPEG. The service store holds at most 512 uploads/256 MiB and refuses further uploads when full. Temporary files may be removed by the OS; clean the service's upload directory when no Agent still needs those files. They are not durable document storage.
+
+Drafts belong to their conversation and survive in-app session switching. Upload retries reuse the attachment ID and message retries reuse the request ID; changed payloads cannot overwrite an existing receipt. Both the Mac daemon and iOS app must be updated for chat uploads; reload/update provider plugins for native image forwarding.
+
 ## Connection and local configuration
 
 Camera and photo QR pairing have been removed from iOS. Use your existing Mac SSH account. Earlier QR transport code remains for compatibility tests; it is not an app connection option. `AGENTMUX_SSH_DISABLED=1` disables the legacy dedicated listener on port 9848.
@@ -74,6 +86,7 @@ cargo clippy --all-targets -- -D warnings
 python3 scripts/smoke-test.py
 python3 scripts/test-tmux-agents.py
 python3 scripts/test-manual-tmux.py
+python3 scripts/test-attachments.py
 node scripts/test-pi-extension.mjs
 # Optional installed Pi SDK loading check; no model request:
 python3 scripts/test-pi-load.py
@@ -91,6 +104,19 @@ build/test-venv/bin/python scripts/test-ssh-agents.py --live
 ```
 
 The service/tmux/native-agent/normal-SSH tests use independent local ports; older QR probe scripts still require their configured ports. Tests use temporary roots and credentials; tmux smoke tests use an isolated socket and `/dev/null` tmux config. Fake protocol fixtures are not proof of provider compatibility.
+
+For offline layout previews of the actual SwiftUI pages (Mac Catalyst, fixture data, no Keychain or network access):
+
+```sh
+python3 scripts/preview-ios-ui.py --screen sessions --output build/ui-sessions.png
+python3 scripts/preview-ios-ui.py --screen attachments --output build/ui-attachments.png
+python3 scripts/preview-ios-ui.py --screen commands --output build/ui-commands.png
+# Pure Foundation presentation regressions:
+swiftc -module-cache-path build/swift-module-cache ios/Sources/MessagePresentation.swift tests/MessagePresentationProbe.swift -o build/MessagePresentationProbe
+build/MessagePresentationProbe
+```
+
+Preview screens also include `chat` and `menu`; `--light` checks light appearance. These screenshots establish component layout, not real iPhone behavior.
 
 The Swift probe compiles **the exact SSHTransport.swift used by iOS** for Mac-side interoperability tests:
 
@@ -154,3 +180,6 @@ Authenticated APIs use `Authorization: Bearer <device credential or local admini
 | POST | `/v1/sessions/{id}/input` / `interrupt` | Legacy terminal control; not used by iOS |
 | GET | `/v1/files?path=...` | Directory list |
 | GET / PUT | `/v1/file?path=...` | File transfer |
+| PUT / GET | `/v1/attachments/{uuid}?name=...` | Private temporary chat upload / authenticated download (name required for PUT only) |
+
+Message actions accept `attachments: ["<receipt UUID>"]`; raw native paths supplied by clients are never trusted. Upload alone does not submit a prompt; send a message action to deliver the receipt to the selected session.

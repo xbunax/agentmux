@@ -36,7 +36,7 @@ export class CodexRPC {
                 this.write({ id: value.id, error: { code: -32601, message: 'Use the session PermissionRequest hook' } });
             }
         });
-        await this.call('initialize', { clientInfo: { name: 'agentmux-plugin', title: 'AgentMux', version: '0.4.0' } });
+        await this.call('initialize', { clientInfo: { name: 'agentmux-plugin', title: 'AgentMux', version: '0.5.0' } });
         this.write({ method: 'initialized' });
     }
     write(value) { this.child?.stdin.write(JSON.stringify(value) + '\n'); }

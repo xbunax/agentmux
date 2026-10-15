@@ -1,6 +1,6 @@
 // Exercise the actual extension with a public-API fixture; no Pi auth or model calls.
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, stat, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, stat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import extension from '../integrations/pi/agentmux.ts';
@@ -9,6 +9,7 @@ const directory = await mkdtemp(join(tmpdir(), 'agentmux-pi-'));
 process.env.AGENTMUX_BRIDGE_DIR = directory;
 const handlers = new Map();
 let idle = true, editor = '', sends = 0, aborted = 0, chosen = '';
+let imageReceived;
 const model = { id: 'test-model', name: 'Fixture', provider: 'fixture' };
 const ctx = {
     cwd: '/fixture', model,
@@ -20,7 +21,7 @@ const ctx = {
 };
 const api = {
     on: (name, handler) => handlers.set(name, handler),
-    sendUserMessage: text => { assert.equal(text, 'from phone'); sends++; idle = false; },
+    sendUserMessage: text => { if(Array.isArray(text)) imageReceived=text; else assert.equal(text, 'from phone'); sends++; idle = false; },
     setModel: async value => { chosen = value.id; return true; },
 };
 extension(api);
@@ -63,6 +64,14 @@ try {
     assert.equal(chosen, model.id);
     assert.equal((await action({ action: 'model', model: 'unavailable', provider: 'fixture' })).status, 400);
     assert.equal((await action({ action: 'abort', agent_pid: process.pid + 1 })).status, 409);
+    const imagePath=join(directory,'image.png');
+    const imageMessage={action:'message',text:'from phone',request_id:'image-message',uploaded_files:[{path:imagePath,mime_type:'image/png'}]};
+    assert.equal((await action(imageMessage)).status,500);
+    assert.equal((await (await fetch(origin+'/snapshot',{headers})).json()).can_send,true,'Failed file preparation must not lock the original Pi editor');
+    await writeFile(imagePath,Buffer.from('fixture-image'));
+    assert.equal((await action(imageMessage)).status,200);
+    assert.equal(imageReceived[0].text,'from phone');assert.equal(imageReceived[1].mimeType,'image/png');
+    assert.equal(Buffer.from(imageReceived[1].data,'base64').toString(),'fixture-image');
     console.log('PASS: Pi same-process SDK bridge authentication, private discovery, conversation/streaming, drafts/dialog protection, send deduplication, cancellation, model selection and PID binding');
 } finally {
     await handlers.get('session_shutdown')({}, ctx);

@@ -13,6 +13,7 @@ cap-std = "3"
 russh = "0.64.1"
 rand = "0.10"
 sha2 = "0.10"
+base64 = "0.23.1"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 

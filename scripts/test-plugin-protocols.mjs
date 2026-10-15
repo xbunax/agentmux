@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, readdir, rm, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { Client } from '../dist/plugins/agentmux-claude/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
@@ -30,7 +30,7 @@ function launch(file, value, extra={}) {
     if(value!==undefined) process.stdin.end(JSON.stringify(value));
     return {process,done};
 }
-let client,transport,codexManifest,daemon;
+let client,transport,codexManifest,daemon,uploadRoot;
 try {
     const notifications=[];
     client=new Client({name:'claude-code-fixture',version:'1.0.0'},{capabilities:{}});
@@ -103,6 +103,38 @@ try {
     assert.equal((await codexAction({action:'approval',request_id:id,approved:false})).status,200);
     const verdict=await permission.done;assert.equal(verdict.code,0);assert.equal(JSON.parse(verdict.stdout).hookSpecificOutput.decision.behavior,'deny');
     assert.equal((await codexAction({action:'approval',request_id:id,approved:true})).status,409);
+    // Exercise image forwarding through the authenticated public API, not a forged bridge path.
+    const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFioAAAAASUVORK5CYII=', 'base64');
+    const fileID = crypto.randomUUID();
+    const uploaded = await fetch(`http://127.0.0.1:${port}/v1/attachments/${fileID}?name=fixture.png`, {method:'PUT', headers:{Authorization:`Bearer ${token}`}, body:image});
+    assert.equal(uploaded.status,200);
+    const receipt = await uploaded.json();
+    assert.ok(receipt.path.startsWith('/tmp/agentmux-uploads-'));
+    uploadRoot = dirname(dirname(dirname(receipt.path)));
+    const claudeSession = listed.find(s=>s.command==='claude');
+    const imageAction = {action:'message',text:'Inspect this image',request_id:'claude-image-once',agent_pid:claudeSession.agent_pid,attachments:[fileID],uploaded_files:[{id:'forged',path:'/etc/hosts',mime_type:'image/png'}]};
+    assert.equal((await api(`/${claudeSession.id}/actions`,imageAction)).status,200);
+    assert.equal((await api(`/${claudeSession.id}/actions`,imageAction)).status,200);
+    await wait(()=>notifications.some(n=>n.params?.meta?.request_id==='claude-image-once'));
+    assert.equal(notifications.filter(n=>n.params?.meta?.request_id==='claude-image-once').length,1);
+    const content = await client.callTool({name:'read_attachment',arguments:{file_id:fileID}});
+    assert.equal(content.content[0].type,'image');
+    assert.equal(content.content[0].mimeType,'image/png');
+    assert.deepEqual(Buffer.from(content.content[0].data,'base64'),image);
+    await assert.rejects(()=>client.callTool({name:'read_attachment',arguments:{file_id:'forged'}}));
+    await client.callTool({name:'reply',arguments:{chat_id:'owner',text:'Image fixture received'}});
+    const codexSession = listed.find(s=>s.command==='codex');
+    const codexImage = {...imageAction,agent_pid:codexSession.agent_pid,request_id:'codex-image-once'};
+    assert.equal((await api(`/${codexSession.id}/actions`,codexImage)).status,200);
+    assert.equal((await api(`/${codexSession.id}/actions`,codexImage)).status,200);
+    operations=(await readFile(logFile,'utf8')).trim().split('\n').map(JSON.parse);
+    const imageQueues=operations.filter(o=>o.method==='queue'&&o.args.includes('--image'));
+    assert.equal(imageQueues.length,1);
+    assert.equal(imageQueues[0].args[imageQueues[0].args.indexOf('--image')+1],receipt.path);
+    assert.ok(!imageQueues[0].args.includes('/etc/hosts'));
+    assert.ok(imageQueues[0].args.includes('fixture-thread'));
+    assert.equal((await codexAction({action:'abort'})).status,200);
+    console.log('PASS: /tmp uploads forwarded to original Codex queue images and Claude MCP image tools; exact bytes, deduplication and forged-path rejection');
     const previousPID=codexManifest.pid;process.kill(previousPID,'SIGKILL');
     await wait(async()=>{try{await http(codexManifest,'/health');return false}catch{return true}});
     const recovered=launch(hookFile,hookEvent,{AGENTMUX_CODEX_BIN:fixture});assert.equal((await recovered.done).code,0);
@@ -115,5 +147,6 @@ try {
     await client?.close();await transport?.close();
     for(const child of children) if(child.exitCode===null) child.kill();
     if(codexManifest) { try {process.kill(codexManifest.pid,'SIGTERM')}catch{} }
+    if(uploadRoot) await rm(uploadRoot,{recursive:true,force:true});
     await rm(temporary,{recursive:true,force:true});
 }

@@ -252,7 +252,7 @@ pub async fn action(
     State(app): State<Shared>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(value): Json<Value>,
+    Json(mut value): Json<Value>,
 ) -> Result<Json<Value>> {
     authorize(&headers, &app)?;
     let manifest = find(&id).await?;
@@ -261,6 +261,19 @@ pub async fn action(
             StatusCode::CONFLICT,
             "插件进程已变化，请重新打开会话。".into(),
         ));
+    }
+    // Receipt IDs are the only upload references accepted from a remote client.
+    if let Some(object) = value.as_object_mut() {
+        object.remove("uploaded_files");
+    }
+    if value["route"] != "tmux" && value["action"] == "message" {
+        let ids: Vec<String> =
+            serde_json::from_value(value.get("attachments").cloned().unwrap_or(json!([])))
+                .map_err(bad)?;
+        let (text, files) =
+            attachments::prepare(&app, value["text"].as_str().unwrap_or_default(), &ids).await?;
+        value["text"] = json!(text);
+        value["uploaded_files"] = attachments::files_json(&files);
     }
     if value["route"] == "tmux" {
         if ![

@@ -14,6 +14,8 @@ fd = sys.stdin.fileno()
 previous = termios.tcgetattr(fd)
 tty.setraw(fd)
 draft, pending, mode, selected = '', '', 'editor', 0
+pasting = False
+sys.stdout.write('\x1b[?2004h'); sys.stdout.flush()
 
 def record(kind, **values):
     with events.open('a') as output:
@@ -45,8 +47,15 @@ try:
     while True:
         pending += os.read(fd,4096).decode('utf8',errors='replace')
         while pending:
-            if pending.startswith(('\x1b[200~','\x1b[201~')):
-                pending=pending[6:];continue
+            if pending.startswith('\x1b[200~'):
+                pasting=True;pending=pending[6:];continue
+            if pending.startswith('\x1b[201~'):
+                pasting=False;pending=pending[6:];continue
+            if pasting:
+                if pending.startswith('\x1b') and len(pending)<6: break
+                char,pending=pending[0],pending[1:]
+                if mode=='editor' and (char.isprintable() or char in ['\r','\n','\t']): draft+=('\n' if char=='\r' else char)
+                continue
             if pending.startswith('\x1b['):
                 if len(pending)<3: break
                 if pending[2] in ['A','B']:

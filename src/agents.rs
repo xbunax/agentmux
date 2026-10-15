@@ -861,15 +861,24 @@ pub struct Action {
     approved: bool,
     #[serde(default)]
     answers: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 pub async fn action(
     State(app): State<Shared>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(request): Json<Action>,
+    Json(mut request): Json<Action>,
 ) -> Result<Json<Value>> {
     authorize(&headers, &app)?;
     let session = find(&app, &id).await?;
+    let mut uploaded_files = Vec::new();
+    if request.action == "message" {
+        (request.text, uploaded_files) =
+            attachments::prepare(&app, &request.text, &request.attachments).await?;
+    } else if !request.attachments.is_empty() {
+        return Err(bad("Only messages accept attachments"));
+    }
     let _operation =
         if ["message", "model", "command", "approval"].contains(&request.action.as_str()) {
             Some(session.operations.lock().await)
@@ -901,6 +910,11 @@ pub async fn action(
                 }
                 return Ok(Json(previous));
             }
+            let images = if session.agent == "codex" {
+                vec![]
+            } else {
+                attachments::images(&uploaded_files).await?
+            };
             {
                 let mut state = session.state.lock().await;
                 if state.busy {
@@ -921,12 +935,38 @@ pub async fn action(
                 request.request_id.clone(),
                 (request.text.clone(), json!({"accepted":"unknown"})),
             );
-            let result=match session.agent.as_str() {
-                "pi"=>session.rpc("prompt",json!({"message":request.text})).await,
-                "claude"=>session.write(json!({"type":"user","message":{"role":"user","content":request.text},"parent_tool_use_id":null,"session_id":""})).await.map(|_|json!({})),
-                _=>{
-                    let thread=session.thread.lock().await.clone(); let model=session.state.lock().await.model.clone();
-                    session.rpc("turn/start",json!({"threadId":thread,"model":model,"input":[{"type":"text","text":request.text}]})).await
+            let result = match session.agent.as_str() {
+                "pi" => {
+                    session
+                        .rpc("prompt", json!({"message":request.text,"images":images}))
+                        .await
+                }
+                "claude" => {
+                    let content = if images.is_empty() {
+                        json!(request.text)
+                    } else {
+                        let mut content = vec![json!({"type":"text","text":request.text})];
+                        content.extend(images.iter().map(|image|json!({"type":"image","source":{"type":"base64","media_type":image["mimeType"],"data":image["data"]}})));
+                        json!(content)
+                    };
+                    session.write(json!({"type":"user","message":{"role":"user","content":content},"parent_tool_use_id":null,"session_id":""})).await.map(|_|json!({}))
+                }
+                _ => {
+                    let thread = session.thread.lock().await.clone();
+                    let model = session.state.lock().await.model.clone();
+                    let mut input = vec![json!({"type":"text","text":request.text})];
+                    input.extend(
+                        uploaded_files
+                            .iter()
+                            .filter(|file| file.mime_type.starts_with("image/"))
+                            .map(|file| json!({"type":"localImage","path":file.path})),
+                    );
+                    session
+                        .rpc(
+                            "turn/start",
+                            json!({"threadId":thread,"model":model,"input":input}),
+                        )
+                        .await
                 }
             };
             if session.agent == "pi"

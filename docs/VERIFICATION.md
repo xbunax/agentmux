@@ -1,5 +1,27 @@
 # Verification record
 
+## Telegram-inspired UI and temporary chat attachments — 2026-10-15, version 0.5
+
+The iOS app now has searchable/pinnable Agent rows, provider filters, adaptive navigation, themed settings/files, message bubbles, rich CLI command cards, copyable code blocks, searchable command/model sheets, and explicit menu confirmation. Chat uses a paperclip picker, removable attachment tray, and photo/file cards. Drafts and pending request IDs belong to each conversation.
+
+Uploads are private, authenticated receipts under Mac `/tmp`, separate from file-browser roots. Sending delivers the caption and actual file paths to the selected original Agent; supported native routes also deliver images. Upload alone does not submit a prompt.
+
+| Check | Result |
+| --- | --- |
+| Rust | 30 unit tests passed; formatting and Clippy with warnings denied passed |
+| Temporary attachments | All three managed protocol fixtures received exact image input plus caption/file references. Passed private `/tmp` permissions, authenticated upload/download, Unicode names, MIME sniffing, idempotency, changed-payload conflicts, traversal/oversize/unknown-ID rejection and digest verification |
+| Manual tmux Agents | Existing fixture processes for all three providers received attachment references with multiline captions in one bracketed-paste message; duplicate request delivered once. Existing draft, menu, approval and cancellation checks still passed; original Agent PIDs preserved |
+| Claude/Codex plugins | Actual packaged bridge code through Rust API passed Codex original-thread `--image` queue and Claude MCP image-tool byte equality, deduplication and forged image-path rejection; existing approval, abort and stale-PID checks passed |
+| Pi SDK | Actual extension under fixture host passed image content/base64 forwarding, alongside existing control checks |
+| Rich presentation | Swift Foundation probe passed CLI tag formatting, ANSI cleanup, literal XML/code preservation, code-fence parsing and attachment receipt presentation |
+| UI layout | Actual SwiftUI source compiled/rendered via offline Mac Catalyst fixture in dark/light appearance: conversation list, chat, slash suggestions, menu cards and attachment tray. No Keychain reads, network connections or model calls |
+| iOS Release | Unsigned arm64 IPA version 0.5.0/build 5 compiled; packaged version and SHA-256 sidecar verified |
+| File/API regression | Existing smoke test passed authentication, config conflicts, tmux controls, file transfer, boundaries, symlink/size checks and no-overwrite behavior |
+
+Commands added: `python3 scripts/test-attachments.py`, `python3 scripts/preview-ios-ui.py --screen attachments`, and the Swift presentation probe documented in README. The upload tests use isolated daemon state and remove their temporary receipt directories.
+
+Mac Catalyst images are layout previews, not iPhone screenshots; platform chrome, keyboard, Dynamic Type, document/Photos picker and real-device interaction still need iPhone verification. Native wire-format fixtures do not establish live model image interpretation. No prompt was sent to the user's running Agents. Update both Mac and iOS for chat uploads, and update/reload plugins for native image inputs. Temporary uploads are not durable storage.
+
 ## Disabled send buttons in real manual sessions — 2026-10-15
 
 Reproduced against the user's original `test` session using GET requests only: Codex was ready, while Claude Code and Pi were incorrectly blocked. Claude had a hidden hardware cursor in its bordered, empty `❯` editor. Pi's Vim extension appended `INSERT` to the lower editor border.

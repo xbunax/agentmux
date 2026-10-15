@@ -7,6 +7,7 @@ mod pairing;
 mod pi_bridge;
 mod plugin_bridge;
 mod relay;
+mod terminal;
 mod tmux_agents;
 mod tmux_ui;
 mod transcripts;
@@ -63,6 +64,7 @@ struct App {
     pairing: Arc<pairing::Pairing>,
     managed: agents::Manager,
     relay: relay::Manager,
+    terminal: terminal::Manager,
     attachments: attachments::Store,
 }
 type Shared = Arc<App>;
@@ -179,34 +181,17 @@ async fn output(
     check_pane(&app, &id).await?;
     tmux(&app, &["capture-pane", "-p", "-t", &id, "-S", "-1000"]).await
 }
-#[derive(Deserialize)]
-struct Input {
-    text: String,
-}
-async fn input(
+// Legacy endpoints carried no stream generation or process identity. Keeping
+// them writable would bypass the terminal workbench's stale-target protection.
+async fn retired_terminal_write(
     State(app): State<Shared>,
     headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(input): Json<Input>,
 ) -> Result<StatusCode> {
     authorize(&headers, &app)?;
-    check_pane(&app, &id).await?;
-    if input.text.len() > 16384 || input.text.contains('\0') {
-        return Err(bad("Invalid input"));
-    }
-    tmux(&app, &["send-keys", "-t", &id, "-l", "--", &input.text]).await?;
-    tmux(&app, &["send-keys", "-t", &id, "Enter"]).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-async fn interrupt(
-    State(app): State<Shared>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Result<StatusCode> {
-    authorize(&headers, &app)?;
-    check_pane(&app, &id).await?;
-    tmux(&app, &["send-keys", "-t", &id, "C-c"]).await?;
-    Ok(StatusCode::NO_CONTENT)
+    Err((
+        StatusCode::GONE,
+        "Use a confirmed /v1/terminal stream generation for terminal input".into(),
+    ))
 }
 #[derive(Deserialize)]
 struct Create {
@@ -429,6 +414,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         pairing: pairing.clone(),
         managed: agents::Manager::default(),
         relay: relay::Manager::default(),
+        terminal: terminal::Manager::default(),
         attachments: attachments::Store::temporary(&state_dir)?,
     });
     let router = Router::new()
@@ -447,12 +433,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .route("/v1/managed/{id}", get(agents::snapshot))
         .route("/v1/managed/{id}/actions", post(agents::action))
         .route("/v1/settings", get(settings).put(update_settings))
+        .route("/v1/terminal/panes", get(terminal::list))
+        .route("/v1/terminal/panes/{id}/open", post(terminal::open))
+        .route(
+            "/v1/terminal/streams/{id}",
+            get(terminal::stream).delete(terminal::close),
+        )
+        .route("/v1/terminal/streams/{id}/input", post(terminal::input))
         .route("/v1/sessions", get(sessions).post(create))
         .route("/v1/sessions/{id}/chat", get(relay::snapshot))
         .route("/v1/sessions/{id}/actions", post(relay::action))
         .route("/v1/sessions/{id}/output", get(output))
-        .route("/v1/sessions/{id}/input", post(input))
-        .route("/v1/sessions/{id}/interrupt", post(interrupt))
+        .route("/v1/sessions/{id}/input", post(retired_terminal_write))
+        .route("/v1/sessions/{id}/interrupt", post(retired_terminal_write))
         .route("/v1/files", get(files))
         .route("/v1/file", get(download).put(upload))
         .layer(DefaultBodyLimit::max(MAX_FILE))
@@ -513,6 +506,7 @@ mod tests {
             pairing: pairing::Pairing::load(tempfile::tempdir().unwrap().keep()).unwrap(),
             managed: agents::Manager::default(),
             relay: relay::Manager::default(),
+            terminal: terminal::Manager::default(),
             attachments: attachments::Store::new(PathBuf::new()),
         };
         let mut headers = HeaderMap::new();

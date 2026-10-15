@@ -163,7 +163,7 @@ with tempfile.TemporaryDirectory(prefix="agentmux-discovery-") as temporary:
         assert request(path + "/actions", dict(message, request_id="after-exit"))[0] == 404
         plain_path = "/v1/sessions/" + urllib.parse.quote(ordinary, safe="")
         assert request(plain_path + "/actions", message)[0] == 404
-        assert request(plain_path + "/input", {"text": "echo unsafe"})[0] == 404
+        assert request(plain_path + "/input", {"text": "echo unsafe"})[0] == 410
         print("PASS: all tmux sessions, renamed windows, multiple agent panes, ordinary-window filtering, outside-root discovery, structured history selection, PID binding, control rejection, delivery deduplication, Mac draft protection, exited-agent rejection")
     finally:
         process.terminate()

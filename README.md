@@ -5,11 +5,11 @@ Rust macOS service + SwiftUI iOS client. Version 0.6 development build.
 ## Features
 
 - Connect with an existing Mac SSH login (password or OpenSSH private key); verify the host fingerprint, then discover AgentMux and enroll automatically. No QR required. Credentials are saved in iOS Keychain.
-- Discover Codex, Claude Code and Pi across all sessions on the selected tmux server. Show Agent windows only; group split panes by window.
-- Telegram-inspired conversation list, chat bubbles, attachment tray, slash suggestions and selection cards. Search/pin Agent conversations, switch sessions from the chat header, and choose dark/light/system appearance.
+- Discover Codex, Claude Code and Pi on the selected tmux server, plus explicitly select any unknown pane in generic terminal mode.
+- Live SwiftTerm TUI above one adjustable Text / Micro / Glide workbench. Local per-session drafts, IME-aware direct input, explicit keys and local viewport browsing. Native iOS 26 glass controls with material/accessibility fallbacks.
 - Rich messages with Markdown, copyable code blocks, formatted CLI commands, collapsible tool cards, model selection, stop controls, approvals and question forms.
 - New native sessions use Codex app-server, Claude Code bidirectional stream-json and Pi JSONL RPC.
-- Manually started tmux Agents stay in their original processes. Send messages without first binding history, complete supported slash commands, operate recognized selection menus, and request cancellation.
+- Manually started tmux Agents stay in their original processes. Navigate unknown keyboard-driven menus through live terminal output and explicit keys; native same-session capabilities optionally reduce steps.
 - Optional Codex, Claude Code and Pi plugins expose native controls for existing sessions. Their activation and capabilities differ; see [plugin setup](docs/PLUGINS.md).
 - Revocable per-device credentials saved in iOS Keychain and hashed on the Mac.
 - iOS settings for default directory and authorized roots, revision conflicts and atomic configuration updates.
@@ -35,11 +35,13 @@ The daemon publishes a private discovery file at `~/Library/Application Support/
 
 ## Agent conversations
 
-The app searches every session on the default tmux server (or the server selected by an `AGENTMUX_TMUX` wrapper). Window names do not need to contain an Agent name. Plain shell windows are hidden, and split windows expose their individual Agents. Discovery includes running Agents outside file roots; the file API and creation of new sessions remain restricted to approved roots.
+The app searches every session on the configured tmux server. Recognized Agents appear automatically; **+ → 选择任意 tmux pane** exposes unknown programs and shells for explicit target selection. No replacement process is started. Discovery is independent of file roots; files and new-session creation remain restricted to approved roots.
 
-Open an Agent window to operate its original process. You do **not** need to create it through AgentMux or select a history file before sending. Type `/` for supported command suggestions. Standard numbered Codex/Claude menus and Pi arrow menus appear as selectable cards: tapping a row navigates only; **confirm** executes the selected option. Unknown screens stay on the Mac. Avoid typing from both devices at once.
+Opening a tmux session shows its live terminal through SwiftTerm. The bottom workbench switches between **文本 / Micro / 滑控** without leaving the screen. Text has a local draft editor and a separate direct-terminal keyboard. Native **发送** is available only when a linked adapter advertises same-session message support; otherwise **填入终端** pastes without clearing existing text or appending Enter. Enter remains a separately labeled key. Multiline paste is refused if tmux cannot positively report bracketed-paste mode, and still requires confirmation when supported.
 
-Cards handle wrapped descriptions and follow-up dialogs such as Codex's reasoning intensity picker. Visible options are marked as a subset; previous/next controls and supported search fields reach other choices. Actions come from the current dialog's keyboard hints and are revalidated before execution. Native Codex plugins expose model-advertised reasoning options directly; Pi SDK dialogs and Claude question/permission hooks return structured forms. See [interaction/plugin research and boundaries](docs/INTERACTION-PLUGINS.md).
+Micro provides explicit navigation/Enter/Esc/Tab/Space and up to six configurable session shortcuts. Glide explicitly separates local viewport browsing from remote arrow keys. New connections require target confirmation; stale streams, foreground-process changes, external resize and uncertain writes stop input instead of replaying. Mac keyboard input is not locked out. See [implementation and state design](docs/TERMINAL-WORKBENCH.md) and [verification/limitations](docs/TERMINAL-VERIFICATION.md).
+
+Native enhancements, history and attachments remain accessible. Parsed menus are no longer a prerequisite or semantic approval fallback. Daemon-managed sessions without tmux panes retain their structured UI and do not expose fake terminal controls.
 
 History is independent of control. Claude runtime metadata can identify its current log; otherwise select the actual current conversation from project-scoped records. AgentMux does not guess from the most recently modified log. Selecting history does not resume, replace, or change the running Agent.
 
@@ -57,7 +59,7 @@ For loading into an already-running Pi with `/reload`, Codex/Claude plugins, cap
 
 Tap the paperclip to select photos or files, optionally add a caption, then send. Uploads default to `/tmp/agentmux-uploads-<uid>-<state-hash>/<attachment-id>/content/<filename>` on the Mac; they do not require adding `/tmp` to the file-browser roots. Only authenticated clients can upload/download receipts. The private directory is separate for each daemon state; files use mode `0600`.
 
-The selected Agent receives the caption and actual uploaded paths in one message. Manually started tmux sessions use their original guarded input route; Agents can read ordinary files through their own tools. Native managed sessions receive images through Codex local-image input, Claude image blocks, or Pi RPC images. Updated plugins use Codex queue images, Pi SDK image content, and Claude's `read_attachment` MCP tool. Actual image interpretation depends on the provider/model. This does not simulate a terminal's interactive attachment picker.
+The selected Agent receives the caption and actual uploaded paths in one message. The terminal workbench uploads privately and inserts paths into the local draft; filling the terminal is a separate explicit action. Agents can read ordinary files through their own tools. Native managed sessions receive images through Codex local-image input, Claude image blocks, or Pi RPC images. Updated plugins use Codex queue images, Pi SDK image content, and Claude's `read_attachment` MCP tool. Actual image interpretation depends on the provider/model. This does not simulate a terminal's interactive attachment picker.
 
 Limits: six attachments per message, 8 MiB per file, 24 MiB per message; photos are resized to at most 2560 pixels and converted to JPEG. The service store holds at most 512 uploads/256 MiB and refuses further uploads when full. Temporary files may be removed by the OS; clean the service's upload directory when no Agent still needs those files. They are not durable document storage.
 
@@ -85,6 +87,8 @@ GitHub Actions runs the same build for iOS changes pushed to `main` and pull req
 cargo fmt --check
 cargo test
 cargo clippy --all-targets -- -D warnings
+python3 scripts/test-terminal-api.py
+python3 scripts/test-terminal-stream.py
 python3 scripts/smoke-test.py
 python3 scripts/test-tmux-agents.py
 python3 scripts/test-manual-tmux.py
@@ -109,10 +113,13 @@ build/test-venv/bin/python scripts/test-ssh-agents.py --live
 
 The service/tmux/native-agent/normal-SSH tests use independent local ports; older QR probe scripts still require their configured ports. Tests use temporary roots and credentials; tmux smoke tests use an isolated socket and `/dev/null` tmux config. Fake protocol fixtures are not proof of provider compatibility.
 
-For offline layout previews of the actual SwiftUI pages (Mac Catalyst, fixture data, no Keychain or network access):
+For actual iOS simulator layout captures (offline fixture data, isolated simulator, no real Agent connection):
 
 ```sh
-python3 scripts/preview-ios-ui.py --screen sessions --output build/ui-sessions.png
+python3 scripts/preview-ios-ui.py --screen text --output build/ui-text.png
+python3 scripts/preview-ios-ui.py --screen micro --output build/ui-micro.png
+python3 scripts/preview-ios-ui.py --screen glide --output build/ui-glide.png
+python3 scripts/preview-ios-ui.py --screen keyboard --output build/ui-keyboard.png
 python3 scripts/preview-ios-ui.py --screen attachments --output build/ui-attachments.png
 python3 scripts/preview-ios-ui.py --screen commands --output build/ui-commands.png
 # Pure Foundation presentation regressions:
@@ -120,7 +127,7 @@ swiftc -module-cache-path build/swift-module-cache ios/Sources/MessagePresentati
 build/MessagePresentationProbe
 ```
 
-Preview screens also include `chat` and `menu`; `--light` checks light appearance. These screenshots establish component layout, not real iPhone behavior.
+Preview screens also include `sessions`, `chat` and `menu`; `--light` checks light appearance. These screenshots establish actual simulator layout, not real-device interaction. The iOS Actions workflow uploads workbench previews for push/PR builds; manual runs can enable `capture_previews`.
 
 The Swift probe compiles **the exact SSHTransport.swift used by iOS** for Mac-side interoperability tests:
 
@@ -146,9 +153,9 @@ See `docs/VERIFICATION.md` for actual verification evidence and device limitatio
 
 - Structured snapshots are polled, not WebSocket replay; retained in daemon memory. No SQLite history or automatic managed-process resume yet.
 - Message IDs prevent resubmission within a running managed session. A timed-out action may have executed; inspect state before retrying. No persistent cross-restart deduplication.
-- Existing sessions support guarded TUI forwarding without plugins. Native plugins require provider activation: Codex trusted hooks/shared daemon; Claude explicit development Channel opt-in; Pi extension loading. Installing a plugin does not hot-enable every already-running process.
+- Existing sessions use live terminal transport without requiring provider plugins. Native plugins require provider activation: Codex trusted hooks/shared daemon; Claude explicit development Channel opt-in; Pi extension loading. Installing a plugin does not hot-enable every already-running process.
 - Transcript discovery uses provider default layouts and environment overrides. Ambiguous records require explicit selection.
-- TUI input checks depend on recognizable standard editors and menus. Slash suggestions cover supported built-ins, not every provider command or custom skill. Arbitrary dialogs, free-text questions, custom themes/launchers and concurrent Mac typing still need local handling.
+- Terminal bootstrap is not a complete serialization of tmux state: pre-attach history, inactive buffers, graphics and uncommon modes need further validation. Old tmux versions without `bracket_paste_flag` reject multiline paste. Mobile/Mac concurrent input cannot be made exclusive by this service. Legacy `/input` and `/interrupt` endpoints now return HTTP 410; update daemon and iOS together.
 - No launchd installer, automatic updates, APNs, Android or multi-user roles.
 - Mobile background suspension closes/invalidates transports; reconnect occurs on the next foreground request. Agents continue while the daemon remains running.
 

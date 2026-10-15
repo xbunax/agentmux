@@ -4,6 +4,9 @@ options:
   deploymentTarget:
     iOS: '17.0'
 packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm.git
+    exactVersion: 1.20.0
   Citadel:
     url: https://github.com/orlandos-nl/Citadel.git
     exactVersion: 0.12.1
@@ -22,6 +25,7 @@ targets:
     platform: iOS
     sources: [Sources]
     dependencies:
+      - package: SwiftTerm
       - package: Citadel
       - package: swift-nio
         product: NIO

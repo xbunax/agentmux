@@ -80,7 +80,8 @@ with tempfile.TemporaryDirectory(prefix='agentmux-real-pi-') as temporary:
             menu = wait(lambda: snapshot().get('interaction'))
             if narrow:
                 assert menu['searchable'], menu
-                action('menu_search',menu_id=menu['id'],text='model-c')
+                # Search editing no longer clears the original input via C-a/C-k.
+                run('send-keys', '-t', pane, '-l', '--', 'model-c')
                 menu=wait(lambda: (m if m and len(m['options'])==1 and 'model-c' in m['options'][0]['label'] else None) if (m:=snapshot().get('interaction')) else None)
             else: assert len(menu['options']) >= 3, menu
             target = next(choice['id'] for choice in menu['options'] if 'model-c' in choice['label'])

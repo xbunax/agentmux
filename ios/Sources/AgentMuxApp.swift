@@ -17,7 +17,7 @@ struct AgentSession: Codable, Identifiable, Hashable {
     var key: String { "\(mode):\(id):\(agentPID ?? 0)" }
     var projectName: String { (directory as NSString).lastPathComponent }
     var sourceName: String { mode == "plugin" ? "插件" : mode == "structured" ? "App 会话" : "tmux" }
-    var displayName: String { command == "claude" ? "Claude Code" : command == "codex" ? "Codex" : "Pi" }
+    var displayName: String { command == "claude" ? "Claude Code" : command == "codex" ? "Codex" : command == "pi" ? "Pi" : command }
     enum CodingKeys: String, CodingKey {
         case id, name, directory, command, mode
         case windowID = "window_id", windowName = "window_name", sessionName = "session_name", agentPID = "agent_pid"
@@ -125,7 +125,7 @@ enum Keychain {
 enum WorkspaceTab: String, CaseIterable, Identifiable {
     case sessions, files, settings
     var id: String { rawValue }
-    var title: String { self == .sessions ? "对话" : self == .files ? "文件" : "设置" }
+    var title: String { self == .sessions ? "会话" : self == .files ? "文件" : "设置" }
     var symbol: String { self == .sessions ? "bubble.left.and.bubble.right.fill" : self == .files ? "folder.fill" : "gearshape.fill" }
 }
 

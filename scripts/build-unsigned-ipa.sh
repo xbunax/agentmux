@@ -4,7 +4,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT/ios"
 xcodegen generate
 # Direct target build requires the device SDK but not a simulator runtime/destination.
-xcodebuild -project AgentMux.xcodeproj -target AgentMux -configuration Release -sdk iphoneos SYMROOT="$ROOT/build/direct" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+xcodebuild -skipPackagePluginValidation -project AgentMux.xcodeproj -target AgentMux -configuration Release -sdk iphoneos SYMROOT="$ROOT/build/direct" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 mkdir -p "$ROOT/dist"
 STAGING=$(mktemp -d)
 trap 'rm -rf "$STAGING"' EXIT

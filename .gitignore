@@ -7,3 +7,7 @@
 /agentmux.json
 /.agentmux/
 .DS_Store
+
+# Python validation caches
+__pycache__/
+*.pyc

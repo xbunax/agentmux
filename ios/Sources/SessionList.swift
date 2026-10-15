@@ -36,6 +36,7 @@ struct SessionList: View {
     @State private var search = ""
     @State private var provider = "all"
     @State private var creating = false
+    @State private var generic = false
     @State private var connectionDetails = false
     @State private var loading = false
     @State private var loadError: String?
@@ -89,18 +90,21 @@ struct SessionList: View {
                 ForEach(groups) { group in sessionSection(group.id, values: group.sessions) }
             }
             .listStyle(.plain).listSectionSpacing(12).appList()
-            .navigationTitle("对话").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("会话").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { connectionDetails = true } label: { Image(systemName: "desktopcomputer").font(.title3) }
                         .accessibilityLabel("Mac 连接详情")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { creating = true } label: { Image(systemName: "square.and.pencil").font(.title3) }
+                    Menu {
+                        Button("选择任意 tmux pane") { generic = true }
+                        Button("新建 Agent 会话") { creating = true }
+                    } label: { Image(systemName: "plus").font(.title3) }
                         .disabled(client.paired == nil).accessibilityLabel("新建 Agent 对话")
                 }
             }
-            .navigationDestination(for: AgentSession.self) { session in ChatView(session: session, availableSessions: sessions) }
+            .navigationDestination(for: AgentSession.self) { session in SessionDestination(session: session, availableSessions: sessions) }
             .refreshable { await refresh() }
             .task(id: "\(client.paired?.deviceID ?? "")-\(phase)") {
                 guard client.paired != nil else { sessions = []; return }
@@ -110,6 +114,7 @@ struct SessionList: View {
                     do { try await Task.sleep(for: .seconds(5)) } catch { return }
                 }
             }
+            .sheet(isPresented: $generic) { GenericPanePicker() }
             .sheet(isPresented: $creating, onDismiss: { Task { await refresh() } }) { CreateSession() }
             .sheet(isPresented: $connectionDetails) {
                 NavigationStack {
@@ -221,5 +226,25 @@ struct CreateSession: View {
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
                 .task { await client.perform { let config: ServiceConfig = try await client.get("/v1/settings"); directory = config.defaultDirectory } }
         }.presentationDragIndicator(.visible)
+    }
+}
+
+
+struct GenericPanePicker: View {
+    @EnvironmentObject var client: Client
+    @Environment(\.dismiss) var dismiss
+    @State private var panes: [AgentSession] = []
+    @State private var error: String?
+    var body: some View {
+        NavigationStack {
+            List {
+                Section { Text("选择原有 pane 后确认控制目标。未知程序和 shell 也可进入通用终端，不会启动替代进程。").font(.subheadline) }
+                if let error { Text(error).foregroundStyle(AppTheme.warning) }
+                ForEach(panes) { pane in NavigationLink(value: pane) { SessionRow(session: pane) } }
+            }.appList().navigationTitle("通用终端")
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+                .navigationDestination(for: AgentSession.self) { pane in TerminalWorkbench(session: pane, availableSessions: panes) }
+                .task { do { panes = try await client.get("/v1/terminal/panes") } catch { self.error = error.localizedDescription } }
+        }
     }
 }

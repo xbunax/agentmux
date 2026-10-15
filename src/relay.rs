@@ -251,16 +251,7 @@ pub async fn action(
                 return Err(conflict("Agent process changed; reopen the conversation"));
             }
             if request.action == "menu_search" {
-                if !menu.searchable
-                    || request.text.len() > 256
-                    || request.text.chars().any(char::is_control)
-                {
-                    return Err(bad("当前交互没有可编辑的搜索框，或搜索内容无效"));
-                }
-                tmux(&app, &["send-keys", "-t", &id, "C-a", "C-k"]).await?;
-                if !request.text.is_empty() {
-                    tmux(&app, &["send-keys", "-t", &id, "-l", &request.text]).await?;
-                }
+                return Err(conflict("请使用终端直输编辑搜索词；不再清空远端输入区。"));
             } else if request.action == "menu_action" {
                 let key = interactions::executable(&menu, &request.control_id)?;
                 tmux(&app, &["send-keys", "-t", &id, &key]).await?;

@@ -13,6 +13,11 @@ on:
       - 'ios/**'
       - 'scripts/build-unsigned-ipa.sh'
   workflow_dispatch:
+    inputs:
+      capture_previews:
+        description: 'Build offline SwiftUI previews in an isolated simulator'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -71,3 +76,26 @@ jobs:
           path: build/ios-build.log
           if-no-files-found: ignore
           retention-days: 14
+
+  previews:
+    if: github.event_name != 'workflow_dispatch' || inputs.capture_previews
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up XcodeGen
+        run: command -v xcodegen || brew install xcodegen
+      - name: Capture actual SwiftUI states with offline data
+        run: |
+          for screen in text micro glide keyboard; do
+            python3 scripts/preview-ios-ui.py --screen "$screen" --output "build/previews/$screen.png"
+          done
+          python3 scripts/preview-ios-ui.py --screen text --light --output build/previews/light.png
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: AgentMux-workbench-previews
+          path: build/previews/*.png
+          if-no-files-found: warn

@@ -219,6 +219,7 @@ actor SSHTransport {
             channel.pipeline.fireErrorCaught(URLError(.timedOut))
         }
         defer { timeout.cancel(); channel.close(promise: nil) }
+        try Task.checkCancellation()
         var headers = HTTPHeaders()
         headers.add(name: "Host", value: "127.0.0.1:\(apiPort)")
         headers.add(name: "Authorization", value: "Bearer \(token)")
@@ -233,6 +234,92 @@ actor SSHTransport {
             if let body { channel.write(HTTPClientRequestPart.body(.byteBuffer(ByteBuffer(bytes: body))), promise: nil) }
             return channel.writeAndFlush(HTTPClientRequestPart.end(nil))
         }.get()
-        return try await promise.futureResult.get()
+        return try await withTaskCancellationHandler {
+            try await promise.futureResult.get()
+        } onCancel: {
+            channel.close(promise: nil)
+        }
+    }
+}
+
+/// A single generation of terminal output. Cancellation closes its own forwarding
+/// channel, not the shared SSH client used by files and native capabilities.
+struct TerminalHTTPStream: @unchecked Sendable {
+    let frames: AsyncThrowingStream<Data, Error>
+    let channel: Channel
+    func close() { channel.close(promise: nil) }
+}
+private final class TerminalResponseHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = HTTPClientResponsePart
+    let continuation: AsyncThrowingStream<Data, Error>.Continuation
+    var pending = Data()
+    var accepted = false
+    var ended = false
+    var timeout: Scheduled<Void>?
+    init(_ continuation: AsyncThrowingStream<Data, Error>.Continuation) { self.continuation = continuation }
+    func handlerAdded(context: ChannelHandlerContext) { armTimeout(context) }
+    func armTimeout(_ context: ChannelHandlerContext) {
+        timeout?.cancel()
+        timeout = context.eventLoop.scheduleTask(in: .seconds(20)) { [weak self, weak channel = context.channel] in
+            self?.continuation.finish(throwing: URLError(.timedOut))
+            channel?.close(promise: nil)
+        }
+    }
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        armTimeout(context)
+        switch unwrapInboundIn(data) {
+        case .head(let head):
+            accepted = head.status == .ok
+            if !accepted { errorCaught(context: context, error: SSHConnectionError.message("终端连接被拒绝（\(head.status.code)），请重新选择目标。")) }
+        case .body(var buffer):
+            guard accepted, !ended else { return }
+            pending.append(contentsOf: buffer.readBytes(length: buffer.readableBytes) ?? [])
+            guard pending.count <= 3 * 1024 * 1024 else { errorCaught(context: context, error: URLError(.dataLengthExceedsMaximum)); return }
+            while let end = pending.firstIndex(of: 10) {
+                let frame = Data(pending[..<end]); pending.removeSubrange(...end)
+                if case .dropped = continuation.yield(frame) {
+                    errorCaught(context: context, error: SSHConnectionError.message("终端输出过快，已停止输入。请重新打开现场。")); return
+                }
+            }
+        case .end:
+            ended = true; timeout?.cancel(); continuation.finish(); context.close(promise: nil)
+        }
+    }
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        ended = true; timeout?.cancel(); continuation.finish(throwing: error); context.close(promise: nil)
+    }
+    func channelInactive(context: ChannelHandlerContext) {
+        timeout?.cancel()
+        if !ended { continuation.finish(throwing: URLError(.networkConnectionLost)) }
+    }
+}
+extension SSHTransport {
+    func terminalStream(profile: PairedMac, generation: String) async throws -> TerminalHTTPStream {
+        guard UUID(uuidString: generation) != nil else { throw URLError(.badURL) }
+        let client = try await connection(profile)
+        let pair = AsyncThrowingStream<Data, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
+        let port = profile.apiPort ?? 9847
+        let channel = try await client.createDirectTCPIPChannel(using: .init(
+            targetHost: "127.0.0.1", targetPort: port,
+            originatorAddress: try SocketAddress(ipAddress: "127.0.0.1", port: 0)
+        )) { channel in
+            channel.pipeline.addHTTPClientHandlers().flatMap {
+                channel.pipeline.addHandler(TerminalResponseHandler(pair.continuation))
+            }
+        }
+        pair.continuation.onTermination = { _ in channel.close(promise: nil) }
+        do {
+            try Task.checkCancellation()
+            var headers = HTTPHeaders()
+            headers.add(name: "Host", value: "127.0.0.1:\(port)")
+            headers.add(name: "Authorization", value: "Bearer \(profile.credential)")
+            headers.add(name: "Connection", value: "close")
+            let head = HTTPRequestHead(version: .http1_1, method: .GET, uri: "/v1/terminal/streams/\(generation)", headers: headers)
+            try await channel.eventLoop.flatSubmit {
+                channel.write(HTTPClientRequestPart.head(head), promise: nil)
+                return channel.writeAndFlush(HTTPClientRequestPart.end(nil))
+            }.get()
+            return TerminalHTTPStream(frames: pair.stream, channel: channel)
+        } catch { channel.close(promise: nil); throw error }
     }
 }

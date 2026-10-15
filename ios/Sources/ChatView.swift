@@ -77,6 +77,7 @@ struct ChatView: View {
     @Environment(\.scenePhase) var phase
     @State private var session: AgentSession
     let availableSessions: [AgentSession]
+    let nativeOnly: Bool
     @State private var snapshot: ChatSnapshot?
     @State private var draft = ""
     @State private var files: [PendingAttachment] = []
@@ -101,7 +102,8 @@ struct ChatView: View {
     @State private var nearBottom = true
     @FocusState private var composing: Bool
 
-    init(session: AgentSession, availableSessions: [AgentSession] = []) {
+    init(session: AgentSession, availableSessions: [AgentSession] = [], nativeOnly: Bool = false) {
+        self.nativeOnly = nativeOnly
         _session = State(initialValue: session)
         self.availableSessions = availableSessions
     }
@@ -109,7 +111,8 @@ struct ChatView: View {
         let collection = session.mode == "structured" ? "managed" : session.mode == "plugin" ? "plugins" : "sessions"
         return "/v1/\(collection)/\(session.id)"
     }
-    private var canSend: Bool { snapshot?.alive == true && (snapshot?.capabilities?.message ?? (snapshot?.busy == false)) && connectionError == nil }
+    private var canSend: Bool { (!nativeOnly || session.mode == "plugin" || session.mode == "structured") && snapshot?.alive == true && (snapshot?.capabilities?.message ?? (snapshot?.busy == false)) && connectionError == nil }
+    private var availableCommands: [SlashCommand] { (snapshot?.commands ?? []).filter { !nativeOnly || $0.kind != "tui" } }
     private var status: String {
         if connectionError != nil { return "正在重新连接" }
         if snapshot == nil { return "正在连接…" }
@@ -121,7 +124,7 @@ struct ChatView: View {
     private var matchingCommands: [SlashCommand] {
         guard draft.hasPrefix("/"), !draft.contains(where: { $0.isWhitespace }) else { return [] }
         let prefix = String(draft.dropFirst()).lowercased()
-        return (snapshot?.commands ?? []).filter { $0.name.lowercased().hasPrefix(prefix) }
+        return availableCommands.filter { $0.name.lowercased().hasPrefix(prefix) }
     }
     private var messages: [ChatMessage] {
         let history = snapshot?.messages ?? []
@@ -158,10 +161,10 @@ struct ChatView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button { info = true } label: { Label("会话详情", systemImage: "info.circle") }
-                        if snapshot?.commands.isEmpty == false { Button { commands = true } label: { Label("命令", systemImage: "command") } }
+                        if !availableCommands.isEmpty { Button { commands = true } label: { Label("命令", systemImage: "command") } }
                         if snapshot?.models.isEmpty == false { Button { models = true } label: { Label("选择模型", systemImage: "slider.horizontal.3") }.disabled(snapshot?.busy == true) }
                         if snapshot?.conversations?.isEmpty == false { Button { conversations = true } label: { Label("对话记录", systemImage: "clock.arrow.circlepath") } }
-                        if snapshot?.capabilities?.abort ?? (snapshot?.busy == true) {
+                        if (!nativeOnly || snapshot?.abortRoute != "tmux") && (snapshot?.capabilities?.abort ?? (snapshot?.busy == true)) {
                             Button(role: .destructive) { confirmStop = true } label: { Label("停止任务", systemImage: "stop.circle") }
                         }
                     } label: { Image(systemName: "ellipsis.circle").font(.title3) }.accessibilityLabel("会话操作")
@@ -221,7 +224,7 @@ struct ChatView: View {
                     if snapshot?.busy == true {
                         HStack(spacing: 9) { ProgressView().controlSize(.small); Text("\(session.displayName) 正在工作…").font(.caption).foregroundStyle(AppTheme.secondary) }.padding(12)
                     }
-                    if let menu = snapshot?.interaction {
+                    if !nativeOnly, let menu = snapshot?.interaction {
                         AgentMenuCard(menu: menu, disabled: sending) { action, choice, control, text in
                             Task { await apply(ChatAction(action: action, text: text, menuID: menu.id, choice: choice, route: menu.route, controlID: control)) }
                         }
@@ -264,7 +267,7 @@ struct ChatView: View {
                 HStack(alignment: .bottom, spacing: 4) {
                     TextField(files.isEmpty ? "消息" : "添加说明", text: $draft, axis: .vertical)
                         .font(.body).lineLimit(1...6).focused($composing).padding(.vertical, 12).padding(.leading, 15)
-                    if snapshot?.commands.isEmpty == false {
+                    if !availableCommands.isEmpty {
                         Button {
                             if draft.isEmpty { draft = "/"; composing = true }
                             else if draft == "/" { draft = "" }
@@ -357,7 +360,7 @@ struct ChatView: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach((snapshot?.commands ?? []).filter { commandSearch.isEmpty || ($0.name + " " + $0.description).localizedCaseInsensitiveContains(commandSearch) }) { command in commandRow(command) }
+                    ForEach(availableCommands.filter { commandSearch.isEmpty || ($0.name + " " + $0.description).localizedCaseInsensitiveContains(commandSearch) }) { command in commandRow(command) }
                 }
             }.background(AppTheme.background).searchable(text: $commandSearch, prompt: "搜索命令")
                 .navigationTitle("Agent 命令").navigationBarTitleDisplayMode(.inline).toolbar { Button("完成") { commands = false } }
@@ -425,6 +428,7 @@ struct ChatView: View {
         snapshot = next
     }
     private func transmit(_ value: ChatAction) async throws {
+        if nativeOnly && (value.route == "tmux" || value.action.hasPrefix("menu_")) { throw attachmentError("请在终端工作台操作此交互。") }
         var action = value; action.agentPID = session.agentPID
         if action.action == "command", action.requestID.isEmpty { action.requestID = UUID().uuidString }
         try await client.send(base + "/actions", value: action)

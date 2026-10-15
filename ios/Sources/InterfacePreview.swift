@@ -63,7 +63,9 @@ enum InterfacePreview {
 struct InterfacePreviewRoot: View {
     var body: some View {
         Group {
-            if ProcessInfo.processInfo.arguments.contains("--preview-chat") {
+            if ProcessInfo.processInfo.arguments.contains("--preview-terminal") {
+                NavigationStack { TerminalWorkbench(session: InterfacePreview.sessions[0], availableSessions: InterfacePreview.sessions) }
+            } else if ProcessInfo.processInfo.arguments.contains("--preview-chat") {
                 NavigationStack { ChatView(session: InterfacePreview.sessions[0], availableSessions: InterfacePreview.sessions) }
             } else { WorkspaceRoot() }
         }.environment(\.horizontalSizeClass, .compact).onAppear {

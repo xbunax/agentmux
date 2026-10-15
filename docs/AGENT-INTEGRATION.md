@@ -1,5 +1,7 @@
 # Agent integration and mobile interaction
 
+> Historical chat-first integration research. The current terminal/workbench architecture and verified boundaries are documented in [TERMINAL-WORKBENCH.md](TERMINAL-WORKBENCH.md) and [TERMINAL-VERIFICATION.md](TERMINAL-VERIFICATION.md). Parsed-menu routes described below are retained for compatibility, not the primary iOS interaction path.
+
 Interface baseline: Codex 0.162.1, Claude Code 2.1.287 and Pi 1.2.0, inspected on 2026-10-15. [Verification](VERIFICATION.md) separates fixtures, real CLI checks and unverified device behavior.
 
 ## Existing sessions are first-class

@@ -112,16 +112,11 @@ with tempfile.TemporaryDirectory(prefix="agentmux-test-") as temporary:
         encoded_pane = urllib.parse.quote(pane, safe="")
         session_path = "/v1/sessions/" + encoded_pane
         assert any(s["id"] == pane for s in json.loads(request("/v1/sessions")[1]))
-        assert (
-            request(session_path + "/input", "POST", {"text": "hello-agentmux"})[0]
-            == 204
-        )
-        for _ in range(50):
-            if b"received:hello-agentmux" in request(session_path + "/output")[1]:
-                break
-            time.sleep(0.05)
-        else:
-            raise AssertionError("Agent did not receive input")
+        # Unbound legacy writes are retired. End-to-end input is exercised by
+        # test-terminal-stream.py using a confirmed, live stream generation.
+        assert request(session_path + "/input", "POST", {"text": "hello-agentmux"})[0] == 410
+        assert request(session_path + "/interrupt", "POST")[0] == 410
+        assert b"received:hello-agentmux" not in request(session_path + "/output")[1]
         assert (
             request(
                 "/v1/sessions", "POST", {"agent": "unknown", "directory": str(project)}

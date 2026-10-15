@@ -12,10 +12,13 @@ struct AgentSession: Codable, Identifiable {
     var windowName: String?
     var sessionName: String?
     var agentPID: UInt32?
+    var nativeAgentPID: UInt32?
+    var nativePaneID: String?
     var displayName: String { command == "claude" ? "Claude Code" : command == "codex" ? "Codex" : "Pi" }
     enum CodingKeys: String, CodingKey {
         case id, name, directory, command, mode
         case windowID = "window_id", windowName = "window_name", sessionName = "session_name", agentPID = "agent_pid"
+        case nativeAgentPID = "native_agent_pid", nativePaneID = "native_pane_id"
     }
 }
 struct Agents: Codable { var codex: String; var claude: String; var pi: String }
@@ -130,6 +133,19 @@ struct SessionList: View {
                 if sessions.isEmpty, client.paired != nil {
                     ContentUnavailableView("暂无运行中的 Agent", systemImage: "bubble.left.and.bubble.right", description: Text("在 Mac 的 tmux 窗口中启动 Codex、Claude Code 或 Pi，或点 + 开始新对话。"))
                 }
+                let plugins = sessions.filter { $0.mode == "plugin" }
+                if !plugins.isEmpty {
+                    Section("插件连接 · 原有会话") {
+                        ForEach(plugins) { session in
+                            NavigationLink { ChatView(session: session) } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Label(session.displayName, systemImage: "puzzlepiece.extension").font(.headline)
+                                    Text(session.directory).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                }.padding(.vertical, 4)
+                            }
+                        }
+                    }
+                }
                 if !windows.isEmpty {
                     Section("Mac 上的 Agent") {
                         ForEach(windows) { window in
@@ -180,8 +196,12 @@ struct SessionList: View {
     func refresh() async {
         await client.perform {
             let managed: [AgentSession] = try await client.get("/v1/managed")
+            let plugins: [AgentSession] = (try? await client.get("/v1/plugins")) ?? []
             let discovered: [AgentSession] = try await client.get("/v1/sessions")
-            sessions = managed + discovered
+            let remaining = discovered.filter { pane in
+                !plugins.contains { $0.nativeAgentPID == pane.agentPID && $0.nativePaneID == pane.id }
+            }
+            sessions = plugins + managed + remaining
         }
     }
 }

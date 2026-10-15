@@ -31,7 +31,7 @@ async fn bridge(session: &tmux_agents::Session) -> Result<Option<Bridge>> {
     }
     let bridge: Bridge = serde_json::from_slice(&tokio::fs::read(path).await.map_err(internal)?)
         .map_err(|_| bad("Invalid Pi bridge manifest"))?;
-    if bridge.version != 1
+    if ![1, 2].contains(&bridge.version)
         || bridge.pid != session.agent_pid
         || bridge.cwd != session.directory
         || bridge.port == 0

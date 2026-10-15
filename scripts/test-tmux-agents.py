@@ -99,6 +99,23 @@ with tempfile.TemporaryDirectory(prefix="agentmux-discovery-") as temporary:
         else:
             raise AssertionError(pi_snapshot)
         assert pi_snapshot["messages"][0]["text"] == "Pi native bridge"
+        plugins = request("/v1/plugins")[1]
+        assert len(plugins) == 1 and plugins[0]["command"] == "pi", plugins
+        plugin = plugins[0]
+        assert plugin["native_agent_pid"] == by_id[pi]["agent_pid"]
+        assert plugin["native_pane_id"] == pi
+        plugin_path = "/v1/plugins/" + plugin["id"]
+        status, plugin_snapshot = request(plugin_path + "/chat")
+        assert status == 200, plugin_snapshot
+        assert plugin_snapshot["agent_pid"] == plugin["agent_pid"]
+        assert plugin_snapshot["messages"][0]["text"] == "Pi native bridge"
+        assert any(c["name"] == "model" for c in plugin_snapshot["commands"])
+        assert request(plugin_path + "/actions", {"action":"model", "agent_pid":plugin["agent_pid"], "model":"fixture", "provider":"test"})[0] == 200
+        manifest_path = root / "bridges" / f"pi-{plugin['agent_pid']}.json"
+        private_manifest = json.loads(manifest_path.read_text())
+        manifest_path.write_text(json.dumps(dict(private_manifest, tmux_pane=ordinary)))
+        assert request("/v1/plugins")[1][0]["native_pane_id"] is None
+        manifest_path.write_text(json.dumps(private_manifest))
         pi_message = {"action":"message", "agent_pid":by_id[pi]["agent_pid"], "text":"native input", "request_id":"pi-once"}
         assert request(pi_path + "/actions", pi_message)[0] == 200
         assert request(pi_path + "/actions", pi_message)[0] == 200

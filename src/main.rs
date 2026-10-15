@@ -3,8 +3,10 @@ mod config;
 mod discovery;
 mod pairing;
 mod pi_bridge;
+mod plugin_bridge;
 mod relay;
 mod tmux_agents;
+mod tmux_ui;
 mod transcripts;
 
 use axum::{
@@ -429,6 +431,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .route("/v1/pair/complete", post(pairing::complete))
         .route("/v1/devices", get(pairing::devices).post(pairing::enroll))
         .route("/v1/devices/{id}", axum::routing::delete(pairing::revoke))
+        .route("/v1/plugins", get(plugin_bridge::list))
+        .route("/v1/plugins/{id}/chat", get(plugin_bridge::snapshot))
+        .route("/v1/plugins/{id}/actions", post(plugin_bridge::action))
         .route("/v1/managed", get(agents::list).post(agents::create))
         .route("/v1/managed/{id}", get(agents::snapshot))
         .route("/v1/managed/{id}/actions", post(agents::action))

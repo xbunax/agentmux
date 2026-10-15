@@ -88,38 +88,21 @@ async fn scan(session: &tmux_agents::Session, state: &mut Relay) -> Result<()> {
 fn conflict(message: &str) -> Error {
     (StatusCode::CONFLICT, message.into())
 }
-pub fn editor_ready(provider: &str, screen: &str, cursor: usize) -> bool {
-    let lines: Vec<_> = screen.lines().collect();
-    let Some(line) = lines.get(cursor) else {
-        return false;
-    };
-    match provider {
-        "codex" => line.trim() == "›",
-        "claude" => line.trim() == "❯",
-        "pi" => {
-            fn border(s: &str) -> bool {
-                let s = s.trim();
-                s.chars().count() >= 8 && s.chars().all(|c| c == '─')
-            }
-            line.trim().is_empty()
-                && cursor > 0
-                && lines.get(cursor - 1).is_some_and(|s| border(s))
-                && lines.get(cursor + 1).is_some_and(|s| border(s))
-        }
-        _ => false,
-    }
+#[cfg(test)]
+fn editor_ready(provider: &str, screen: &str, cursor: usize) -> bool {
+    tmux_ui::Frame::parse(screen, if provider == "pi" { 0 } else { 2 }, cursor, true)
+        .editor_ready(provider)
 }
 async fn ready(app: &App, session: &tmux_agents::Session) -> Result<bool> {
-    let cursor = tmux(
-        app,
-        &["display-message", "-p", "-t", &session.id, "#{cursor_y}"],
+    Ok(tmux_ui::capture(app, &session.id)
+        .await?
+        .editor_ready(&session.command))
+}
+pub async fn terminal_controls(app: &App, session: &tmux_agents::Session) -> Result<Value> {
+    let frame = tmux_ui::capture(app, &session.id).await?;
+    Ok(
+        json!({"commands":tmux_ui::commands(&session.command),"interaction":frame.menu(&session.command,session.agent_pid),"ready":frame.editor_ready(&session.command)}),
     )
-    .await?;
-    let screen = tmux(app, &["capture-pane", "-p", "-t", &session.id]).await?;
-    Ok(cursor
-        .trim()
-        .parse()
-        .is_ok_and(|row| editor_ready(&session.command, &screen, row)))
 }
 fn valid_text(text: &str) -> bool {
     !text.trim().is_empty()
@@ -145,28 +128,38 @@ pub async fn snapshot(
         .selected
         .as_ref()
         .and_then(|id| state.conversations.iter().find(|c| &c.id == id));
+    let mut history_error = None;
     let messages = if let Some(conversation) = selected {
         let path = conversation.path.clone();
         let provider = session.command.clone();
-        tokio::task::spawn_blocking(move || transcripts::read(&provider, &path))
+        match tokio::task::spawn_blocking(move || transcripts::read(&provider, &path))
             .await
             .map_err(internal)?
-            .map_err(internal)?
+        {
+            Ok(messages) => messages,
+            Err(_) => {
+                history_error = Some("历史记录暂不可读，交互仍连接当前窗口。");
+                vec![]
+            }
+        }
     } else {
         vec![]
     };
-    let ready = ready(&app, &session).await?;
-    let notice = if selected.is_none() {
-        "请选择此窗口当前使用的对话记录；不会按最近修改时间自动猜测。"
+    let controls = terminal_controls(&app, &session).await?;
+    let ready = controls["ready"] == true;
+    let notice = if !controls["interaction"].is_null() {
+        "Agent 等待你的选择。先选择一项，再确认执行。"
+    } else if selected.is_none() {
+        "已连接原来的 Agent；可直接发送消息和命令，也可选择记录查看历史。"
     } else if ready {
-        "已连接原有 Agent。审批与模型设置请在 Mac 上操作，或新建原生会话。"
+        "已连接原来的 Agent；消息和命令发送到当前窗口。"
     } else {
         "Agent 正在工作、显示对话框或 Mac 输入框已有草稿；暂不发送新消息。"
     };
     Ok(Json(
-        json!({"messages":messages,"models":[],"commands":[],"model":"","busy":false,"alive":true,"approvals":[],"error":null,"revision":0,
+        json!({"messages":messages,"models":[],"commands":controls["commands"],"interaction":controls["interaction"],"model":"","busy":false,"alive":true,"approvals":[],"error":history_error,"revision":0,
         "agent_pid":state.pid,"conversations":state.conversations,"conversation_id":state.selected,
-        "capabilities":{"message":ready && selected.is_some(),"abort":true,"models":false,"approvals":false},"notice":notice,"source":"tmux"}),
+        "capabilities":{"message":ready,"abort":true,"models":false,"approvals":false},"notice":notice,"source":"tmux"}),
     ))
 }
 #[derive(Deserialize, Serialize)]
@@ -183,6 +176,10 @@ pub struct Action {
     model: String,
     #[serde(default)]
     provider: String,
+    #[serde(default)]
+    menu_id: String,
+    #[serde(default)]
+    choice: Option<usize>,
 }
 pub async fn action(
     State(app): State<Shared>,
@@ -218,6 +215,47 @@ pub async fn action(
             }
             state.selected = Some(request.conversation_id);
         }
+        "menu_select" | "menu_confirm" | "menu_cancel" => {
+            let frame = tmux_ui::capture(&app, &id).await?;
+            let menu = frame
+                .menu(&session.command, session.agent_pid)
+                .ok_or_else(|| conflict("菜单已结束，请刷新当前会话。"))?;
+            if menu.id != request.menu_id {
+                return Err(conflict("Mac 上的菜单已变化，请确认最新选项后重试。"));
+            }
+            if request.action == "menu_select" {
+                let target = request.choice.ok_or_else(|| bad("请选择菜单选项"))?;
+                if target >= menu.options.len() {
+                    return Err(bad("Invalid menu option"));
+                }
+                let current = menu
+                    .options
+                    .iter()
+                    .position(|c| c.selected)
+                    .ok_or_else(|| conflict("菜单当前选项未知"))?;
+                let key = if target > current { "Down" } else { "Up" };
+                if target != current {
+                    let mut keys = vec!["send-keys", "-t", &id];
+                    keys.extend(std::iter::repeat_n(key, target.abs_diff(current)));
+                    tmux(&app, &keys).await?;
+                }
+            } else {
+                tmux(
+                    &app,
+                    &[
+                        "send-keys",
+                        "-t",
+                        &id,
+                        if request.action == "menu_confirm" {
+                            "Enter"
+                        } else {
+                            "Escape"
+                        },
+                    ],
+                )
+                .await?;
+            }
+        }
         "message" => {
             if !valid_text(&request.text)
                 || request.request_id.is_empty()
@@ -239,15 +277,6 @@ pub async fn action(
             if state.sent.len() >= 1024 {
                 return Err(conflict(
                     "Relay message limit reached; reconnect the daemon after inspecting the conversation",
-                ));
-            }
-            if !state
-                .selected
-                .as_ref()
-                .is_some_and(|id| state.conversations.iter().any(|c| &c.id == id))
-            {
-                return Err(conflict(
-                    "Select this window's current conversation before sending",
                 ));
             }
             if !ready(&app, &session).await? {
@@ -326,9 +355,7 @@ pub async fn action(
             tmux(&app, &["send-keys", "-t", &id, "Escape"]).await?;
         }
         _ => {
-            return Err(bad(
-                "This existing TUI supports messages and Escape only; use a native session for models and approvals",
-            ));
+            return Err(bad("Unsupported operation for this tmux Agent"));
         }
     }
     Ok(Json(json!({"accepted":true})))

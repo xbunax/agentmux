@@ -1,56 +1,49 @@
 # Agent integration and mobile interaction
 
-Verified against the installed CLI interfaces on 2026-10-15: Codex 0.162.1, Claude Code 2.1.287, and Pi 1.2.0. These interfaces evolve; fixture results and real-provider results are recorded separately in `VERIFICATION.md`.
+Interface baseline: Codex 0.162.1, Claude Code 2.1.287 and Pi 1.2.0, inspected on 2026-10-15. [Verification](VERIFICATION.md) separates fixtures, real CLI checks and unverified device behavior.
 
-## The interaction model
+## Existing sessions are first-class
 
-The iOS app presents conversations, tool cards, model selection, stop controls, and approval/question forms. It does not render terminal snapshots. AgentMux normalizes provider events and routes actions back to the originating process. Unsupported controls are hidden or explicitly marked; it never treats an approval dialog as an ordinary message.
+Manually running `tmux new-session … codex`, `claude` or `pi` is supported. Start AgentMux later and open that Agent from iOS. No AgentMux-created replacement is required. The app presents chat, command suggestions and selection cards, rather than a terminal screen.
 
-| Source | Conversation and tools | Send / stop | Models | Approvals and questions |
-| --- | --- | --- | --- | --- |
-| New Codex session | App-server events | Native turn controls | Next turn | Command/file approvals, per-turn permissions, question forms |
-| New Claude Code session | Bidirectional stream-json | Native input / interrupt | Native control | Tool permission responses and `AskUserQuestion` forms |
-| New Pi session | JSONL RPC events | Native prompt / abort | Native control | Supported extension confirm/select/input/editor requests |
-| Existing Pi with extension | Current SDK branch and streaming message | Same-process SDK | Same-process SDK | Existing interactive dialogs stay on Mac |
-| Existing Codex / Claude / Pi TUI | Provider JSONL records | Guarded paste / Escape | On Mac | On Mac |
+| Connection | Messages / stop | Commands and models | Approvals / questions |
+| --- | --- | --- | --- |
+| Manually started tmux Agent, no plugin | Guarded editor paste / Escape | Supported built-in suggestions; recognized menus operate the original window | Recognized selection menus; arbitrary text forms stay on Mac |
+| Existing Codex with plugin | Shared-daemon queue / native interrupt | Native model override, compact, status; additional tmux commands when linked | Trusted PermissionRequest hook; other forms need TUI support or Mac |
+| Existing Claude with Channel plugin | Channel notifications; Escape when linked to tmux | Native status; additional tmux commands when linked | Channel allow/deny; AskUserQuestion forms remain unsupported |
+| Existing Pi with extension | Same-process SDK / abort | Available models, compact, session, public extension commands | Other extensions' dialogs remain on Mac, unless recognized as a linked tmux menu |
+| AgentMux-created Codex / Claude / Pi | Provider-native child protocol | Native controls supported by that adapter | Structured supported approvals and question forms |
 
-## Discovery and binding
+Activation requirements are in [PLUGINS.md](PLUGINS.md). Plugins are optional for ordinary tmux forwarding. Installing one does not activate it inside every existing process.
 
-`tmux list-panes -a` searches every session on the selected tmux server. AgentMux walks each pane's process tree, recognizes provider executables, interpreter entry points and configured launchers, and groups panes by window in iOS. A window title alone never identifies an Agent. Windows without an Agent are hidden. Split windows can contain several independently selectable Agents.
+## Discovery and process identity
 
-This covers the default server, or the server selected by an `AGENTMUX_TMUX` wrapper. It does not enumerate unrelated custom tmux sockets. Discovered Agents can be outside configured file roots; file transfer and new-session creation remain confined to those roots. Access grants control as the authenticated Mac user.
+`tmux list-panes -a` covers all sessions on the selected server. AgentMux walks each pane's process tree, recognizes executables/interpreter entry points/configured launchers, and groups Agent panes by window. Ordinary windows are hidden. Window titles alone never identify an Agent.
 
-Claude's runtime PID/session metadata can bind a conversation automatically. Otherwise the app offers project-scoped conversation records for explicit selection, even when only one candidate exists. Selection changes the displayed history; it does not resume or replace the Agent. Modification time is never evidence of process ownership. Custom transcript directories and unusual launcher wrappers may need additional adaptation.
+The default server is used unless `AGENTMUX_TMUX` selects another server through a wrapper. Unrelated custom tmux sockets are not enumerated. Discovery includes Agents outside file roots; file transfers and new-session creation remain confined to configured roots.
 
-The TUI relay verifies the live Agent PID on every action, requires a recognizable empty editor, uses bracketed paste, rejects terminal control characters, and deduplicates request IDs. It rejects drafts and unrecognized screens. Escape requests cancellation without sending Ctrl-C to the shell. Concurrent Mac typing can still race a readiness check: avoid editing from both devices simultaneously. A successful paste acknowledges delivery to the editor, not model execution. Unknown outcomes must be inspected before retrying. Retained history and deduplication are bounded and are not durable across daemon restarts.
+Every TUI action checks the live Agent PID. A plugin is linked to a pane only when its advertised pane, native PID and provider match fresh process discovery. The phone receives neither the plugin's loopback token nor its private transcript path.
 
-## Why existing terminal sessions differ
+## Editor and menu forwarding
 
-Codex App Server exposes threads, turns, items, models, approvals, and user-input requests. `thread/read` reads history; a new independent app-server process is not proof of ownership of an already-live TUI thread. The current Codex CLI additionally offers a shared-daemon proxy and queue interface. Native attachment through that shared daemon is a future improvement and is not implemented here. [Official App Server reference](https://developers.openai.com/codex/app-server/).
+Sending requires a recognizable empty editor. Dim Codex/Claude placeholders and Pi's default software cursor are supported; real Mac drafts are rejected. Text uses bracketed paste, rejects terminal control characters and requires a deduplicated request ID. Escape requests cancellation without sending Ctrl-C to a shell.
 
-Claude's SDK routes tool approvals and clarifying questions through different response payloads; `AskUserQuestion` answers must be returned with the original questions. Its Remote Control feature keeps the existing process alive through Anthropic's service. AgentMux does not use that service or undocumented peer sockets as a generic local attachment protocol. [SDK user interaction](https://code.claude.com/docs/en/agent-sdk/user-input), [Remote Control](https://code.claude.com/docs/en/remote-control).
+Recognized numbered Codex/Claude lists and bordered Pi arrow lists become choice cards. Selection sends arrows only. Confirmation requires a separate tap and a fresh hash covering the provider, PID, context, options and current selection. A changed menu rejects stale confirmation. Unrecognized dialogs refuse input instead of guessing.
 
-Pi distinguishes RPC mode from interactive mode. Its public extension API allows a bridge into the existing session, including user messages, current branch, model changes, and abort. This is why the optional Pi extension can provide stronger existing-process integration than terminal input forwarding. [Pi RPC documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md), [Pi extension documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
+Concurrent Mac input can still race a check. Avoid editing simultaneously. Delivery acknowledgment does not prove model execution. Inspect uncertain outcomes before retrying. Deduplication is bounded and does not survive service/plugin restarts.
 
-## Enable the Pi extension
+## History does not control attachment
 
-For a new Pi process, use the absolute path to this checkout:
+History is optional for sending. Claude runtime metadata or plugin hooks can identify the exact log. Otherwise the app offers project-scoped records for explicit display selection, even with a single candidate. Modification time is never evidence of process ownership. Selecting a record changes displayed history only; it never resumes or replaces an Agent. Unusual transcript layouts may need adaptation.
 
-```sh
-pi -e /absolute/path/to/agentmux/integrations/pi/agentmux.ts
-```
+## Native protocol sources
 
-To load it into an existing Pi process without restarting, place a link in Pi's extension directory, then run `/reload` in Pi:
+Codex uses the existing shared daemon through `app-server proxy` and `queue --thread`, with a session ID registered by trusted hooks. It never starts or resumes an independent copy of that live thread. These interfaces must be available in the installed CLI. [Official App Server reference](https://developers.openai.com/codex/app-server/), [hooks](https://developers.openai.com/codex/hooks), [slash commands](https://developers.openai.com/codex/cli/slash-commands/).
 
-```sh
-mkdir -p ~/.pi/agent/extensions
-ln -s /absolute/path/to/agentmux/integrations/pi/agentmux.ts ~/.pi/agent/extensions/agentmux.ts
-```
+Claude uses documented MCP Channel notifications and its permission channel. Custom Channels are a research preview with explicit startup opt-in and applicable organization policy. Channel delivery does not acknowledge the final approval outcome if the Mac answered first. [Channels reference](https://code.claude.com/docs/en/channels-reference).
 
-`ln -s` will fail if that destination already exists; inspect it before replacing anything. With a custom `PI_CODING_AGENT_DIR`, use its `extensions` directory instead. No global extension is installed automatically by AgentMux.
+Pi uses its public extension API inside the existing process. RPC remains the separate protocol for AgentMux-created Pi children. Extension dialogs are not monkeypatched into remote forms. [Pi extensions](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md), [RPC](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md).
 
-The extension listens only on loopback with a random port and token. A private `0600` manifest in `~/Library/Application Support/AgentMux/bridges` binds it to its PID and working directory. `AGENTMUX_BRIDGE_DIR` overrides this directory and must match in both processes. AgentMux prefers this bridge whenever it exists; it does not silently downgrade a broken bridge to simulated input. Models come from Pi's available catalogue. Other extensions' interactive dialogs remain on the Mac.
+## Validation boundary
 
-## Remaining validation
-
-The release app compiles, parser and forwarding fixtures pass, and the installed Pi SDK loads the real extension without a model request. Real iPhone interaction, live model streaming, real tool approvals, and cancellation during provider work still require end-to-end testing. Native managed sessions remain daemon-owned children, not existing tmux processes, and are not automatically restored after a daemon restart.
+The real Pi TUI passed an offline model-menu change after starting manually before AgentMux. Existing real Codex panes passed read-only readiness checks. Three-provider TUI fixtures and native plugin protocol/API fixtures passed; they do not prove live model/tool behavior. Real iPhone operation and full live-provider approval, streaming and cancellation still require end-to-end validation. No existing user Agent was restarted for these checks.

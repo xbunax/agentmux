@@ -1,5 +1,33 @@
 # Verification record
 
+## Existing manual sessions and plugins — 2026-10-15, version 0.4
+
+History binding and dim-placeholder false negatives previously prevented some manually started Agents from receiving input. History is now optional for control. iOS adds inline slash suggestions, explicit selection/confirmation cards and provider plugin sessions.
+
+| Check | Result |
+| --- | --- |
+| Rust unit tests | 27 passed, including placeholder/RGB/draft protection, Pi software cursor and unnumbered lists, stale menu identity and private plugin metadata |
+| Three-provider manual tmux acceptance | Real isolated tmux, fake interactive providers started **before** the daemon. Passed send/dedup, no-history input, slash/model menu, navigation without execution, stale confirmation rejection, explicit file-write approval, cancellation and unchanged wrapper/Agent child PIDs. No managed session created |
+| Real existing Codex, read-only | Both original user panes discovered and reported input-ready with four slash suggestions. GET requests only; no messages or controls sent |
+| Real installed Pi TUI | Pi 1.2.0 started manually before AgentMux with isolated config, offline mode, no extension and dummy local models. Passed default software-cursor recognition, `/model`, unnumbered menu, navigation/confirmation and actual model change; original PID preserved. No model prompt sent |
+| Claude/Codex plugin protocols | Official MCP SDK fixture passed Claude messages/replies and permission notifications. Codex proxy fixture passed exact-thread queue/model/compact/interrupt and explicit PermissionRequest hook denial; no independent thread start/resume. Concurrent hooks created one bridge |
+| Native plugins through Rust API | Externally launched Claude/Codex plugins discovered, iOS-shaped snapshots and status commands passed, stale PIDs rejected. Actual Pi extension in a fake SDK host passed generic plugin discovery/snapshot/model action and pane binding |
+| Provider packaging | Bundled Codex marketplace installation succeeded with temporary CODEX_HOME; Claude CLI manifest validation passed with a naming warning. User global plugin settings unchanged |
+| iOS Release | Version 0.4.0/build 4 unsigned arm64 IPA compiled with slash completion, plugin list, menu cards and linked-pane stop route |
+
+Additional commands:
+
+```sh
+python3 scripts/test-manual-tmux.py
+python3 scripts/check-existing-tmux.py  # read-only against existing panes
+python3 scripts/test-real-pi-tui.py    # real offline Pi, isolated tmux
+python3 scripts/package-plugins.py
+npm ci --ignore-scripts --prefix dist/plugins/agentmux-claude
+node scripts/test-plugin-protocols.mjs
+```
+
+These checks do not establish real iPhone end-to-end correctness or live model/tool execution across all providers. Existing Codex checks did not send input. Claude native Channels require explicit opt-in and applicable provider policy; installation alone cannot activate them in an already-running process. General free-text dialogs and arbitrary extension UIs are not automatically supported.
+
 ## Agent conversation UI — 2026-10-15, version 0.3
 
 The iOS camera/photo scanner and terminal screen have been removed. SSH is the connection flow. The app groups discovered Agent panes by tmux window and presents conversations, tool cards, native models, cancellation, approvals, and question forms according to source capabilities.
@@ -40,7 +68,7 @@ The tmux test and smoke test use temporary tmux sockets. Service tests now selec
 - Real iPhone interaction: SSH login against macOS Remote Login, conversation selection, text entry, scrolling, Dynamic Type, approvals, question forms, and foreground/background reconnection.
 - Live model/tool work for all three providers, including streaming, approvals, cancellation, and model changes. Fixture success is not proof of live-provider compatibility. No model requests were made during this update.
 - Pi extension operation in a real interactive tmux session during a tool-using task. Its real SDK load was verified in RPC mode; the same-process end-to-end relay used a fixture host.
-- Existing Codex/Claude TUI editor recognition across installed versions, themes and custom launchers. Unexpected screens refuse input. These sources do not have full native attachment, model switching or approval forwarding.
+- Existing Codex/Claude TUI editor/menu recognition across other versions, themes and custom launchers. Unexpected screens refuse input. Version 0.4 adds standard menu forwarding and optional native plugins; full live-provider operation remains unverified.
 - RSA login compatibility with the intended SSH server remains dependent on accepted signature algorithms.
 
 Existing processes are never restarted or converted automatically. No running user service was stopped for testing. Updating a daemon that owns native sessions should wait until their work is complete. Read [Agent integration](AGENT-INTEGRATION.md) for the capability matrix, protocol sources, and Pi installation instructions.

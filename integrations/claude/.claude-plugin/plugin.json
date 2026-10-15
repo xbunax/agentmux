@@ -1,0 +1,8 @@
+{
+  "name": "agentmux-claude",
+  "version": "0.4.0",
+  "description": "Control existing claude sessions from AgentMux over SSH",
+  "author": {
+    "name": "AgentMux contributors"
+  }
+}

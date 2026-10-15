@@ -1,7 +1,7 @@
 // Load with: pi -e /absolute/path/to/integrations/pi/agentmux.ts
 // Uses Pi's public extension API without replacing the interactive process.
 import { createServer } from "node:http";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -13,8 +13,10 @@ export default function agentmux(pi: ExtensionAPI) {
     let waiting = false;
     let sending = false;
     let mutation = false;
+    let sessionInfo = "";
     const delivered = new Map<string, { text: string; accepted: boolean }>();
     const token = randomBytes(32).toString("hex");
+    const bridgeID = randomUUID();
     const directory = process.env.AGENTMUX_BRIDGE_DIR ?? join(homedir(), "Library/Application Support/AgentMux/bridges");
     const manifest = join(directory, `pi-${process.pid}.json`);
     let started = false;
@@ -32,6 +34,16 @@ export default function agentmux(pi: ExtensionAPI) {
                 if (draft) entries.push({ type: "message", id: "agentmux-stream", parentId: entries.at(-1)?.id ?? null, message: draft });
                 reply(200, {
                     entries, pid: process.pid, cwd: ctx.cwd, session_id: ctx.sessionManager.getSessionId(),
+                    bridge_id: bridgeID, bridge_pid: process.pid, native_session_id: ctx.sessionManager.getSessionId(),
+                    messages: [], alive: true, approvals: [], error: null, revision: 0, source: "pi-plugin",
+                    commands: [
+                        { name: "model", description: "选择当前会话的模型", kind: "model" },
+                        { name: "compact", description: "压缩当前会话上下文", kind: "command" },
+                        { name: "session", description: "查看当前会话信息", kind: "command" },
+                        ...(pi.getCommands?.() ?? []).filter(c => !["model", "compact", "session"].includes(c.name)).map(c => ({ name: c.name, description: c.description ?? "Pi 命令", kind: "command" })),
+                    ],
+                    capabilities: { message: !sending && ctx.isIdle() && !waiting && !ctx.hasPendingMessages() && !ctx.ui.getEditorText(), abort: true, models: true, approvals: false },
+                    notice: waiting ? "Pi 正在等待 Mac 上的扩展对话框。" : sessionInfo || "已通过插件连接原来的 Pi 会话。",
                     busy: sending || !ctx.isIdle(), waiting, model: ctx.model?.id ?? "",
                     models: ctx.modelRegistry.getAvailable().map(m => ({ id: m.id, name: m.name, provider: m.provider })),
                     can_send: !sending && ctx.isIdle() && !waiting && !ctx.hasPendingMessages() && !ctx.ui.getEditorText(),
@@ -71,6 +83,20 @@ export default function agentmux(pi: ExtensionAPI) {
                     if (!ctx.isIdle() || sending || waiting) { reply(409, { error: "Wait for Pi to become idle" }); return; }
                     const model = ctx.modelRegistry.getAvailable().find(m => m.id === action.model && m.provider === action.provider);
                     if (!model || !(await pi.setModel(model))) { reply(400, { error: "Model is unavailable" }); return; }
+                } else if (action.action === "command") {
+                    if (!ctx.isIdle() || sending || waiting || ctx.hasPendingMessages() || ctx.ui.getEditorText()) { reply(409, { error: "Pi is busy or the Mac editor has a draft" }); return; }
+                    if (typeof action.text !== "string" || action.text.length > 65536 || typeof action.request_id !== "string" || !action.request_id) { reply(400, { error: "Command and request_id required" }); return; }
+                    const key = `command-${action.request_id}`;
+                    const previous = delivered.get(key);
+                    if (previous) { reply(previous.accepted && previous.text === action.text ? 200 : 409, { accepted: previous.accepted }); return; }
+                    if (delivered.size >= 1024) { reply(409, { error: "Session request limit reached" }); return; }
+                    const name = action.text.split(/\s/)[0];
+                    if (!["compact", "session"].includes(name) && !(pi.getCommands?.() ?? []).some(c => c.name === name)) { reply(400, { error: "Command not advertised by Pi" }); return; }
+                    delivered.set(key, { text: action.text, accepted: false });
+                    if (name === "compact") { ctx.compact(); }
+                    else if (name === "session") { sessionInfo = `Pi · ${ctx.sessionManager.getSessionId()}\n${ctx.cwd}`; }
+                    else pi.sendUserMessage("/" + action.text, { expandPromptTemplates: true });
+                    delivered.set(key, { text: action.text, accepted: true });
                 } else { reply(400, { error: "Unsupported Pi action" }); return; }
                 reply(200, { accepted: true });
             } finally { mutation = false; }
@@ -83,11 +109,11 @@ export default function agentmux(pi: ExtensionAPI) {
         if (!context || !address || typeof address === "string") return;
         mkdirSync(directory, { recursive: true, mode: 0o700 });
         const temporary = `${manifest}.tmp`;
-        writeFileSync(temporary, JSON.stringify({ version: 1, pid: process.pid, port: address.port, token, cwd: context.cwd }), { mode: 0o600 });
+        writeFileSync(temporary, JSON.stringify({ version: 2, provider: "pi", id: bridgeID, pid: process.pid, agent_pid: process.pid, tmux_pane: process.env.TMUX_PANE ?? null, port: address.port, token, cwd: context.cwd }), { mode: 0o600 });
         renameSync(temporary, manifest);
     };
     pi.on("session_start", async (_, ctx) => {
-        context = ctx; draft = undefined; sending = false; waiting = false;
+        context = ctx; draft = undefined; sending = false; waiting = false; sessionInfo = "";
         if (!started) {
             started = true;
             server.on("error", () => ctx.ui.notify("AgentMux bridge could not start", "error"));

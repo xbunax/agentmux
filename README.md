@@ -1,6 +1,6 @@
 # AgentMux
 
-Rust macOS service + SwiftUI iOS client. Version 0.3 development build.
+Rust macOS service + SwiftUI iOS client. Version 0.4 development build.
 
 ## Features
 
@@ -8,8 +8,8 @@ Rust macOS service + SwiftUI iOS client. Version 0.3 development build.
 - Discover Codex, Claude Code and Pi across all sessions on the selected tmux server. Show Agent windows only; group split panes by window.
 - Chat interface with Markdown messages, tool status/result cards, model selection, stop controls, approvals and question forms. No terminal screen in the app.
 - New native sessions use Codex app-server, Claude Code bidirectional stream-json and Pi JSONL RPC.
-- Existing processes stay running. Read their provider-owned conversation logs and relay messages only to a verified empty Agent editor; use Escape for cancellation.
-- Optional Pi SDK extension connects directly to the same existing Pi process for messages, streaming history, model selection and abort.
+- Manually started tmux Agents stay in their original processes. Send messages without first binding history, complete supported slash commands, operate recognized selection menus, and request cancellation.
+- Optional Codex, Claude Code and Pi plugins expose native controls for existing sessions. Their activation and capabilities differ; see [plugin setup](docs/PLUGINS.md).
 - Revocable per-device credentials saved in iOS Keychain and hashed on the Mac.
 - iOS settings for default directory and authorized roots, revision conflicts and atomic configuration updates.
 - File listing and upload/download up to 8 MiB, without overwrite; capability-confined file access.
@@ -35,7 +35,9 @@ The daemon publishes a private discovery file at `~/Library/Application Support/
 
 The app searches every session on the default tmux server (or the server selected by an `AGENTMUX_TMUX` wrapper). Window names do not need to contain an Agent name. Plain shell windows are hidden, and split windows expose their individual Agents. Discovery includes running Agents outside file roots; the file API and creation of new sessions remain restricted to approved roots.
 
-Open an Agent window to view its conversation. Claude runtime metadata can identify its current log; otherwise select the actual current conversation from project-scoped records. AgentMux does not guess from the most recently modified log. Existing terminal sessions support guarded message forwarding and Escape; their model settings and approvals remain on the Mac. Avoid typing from both devices at once.
+Open an Agent window to operate its original process. You do **not** need to create it through AgentMux or select a history file before sending. Type `/` for supported command suggestions. Standard numbered Codex/Claude menus and Pi arrow menus appear as selectable cards: tapping a row navigates only; **confirm** executes the selected option. Unknown screens stay on the Mac. Avoid typing from both devices at once.
+
+History is independent of control. Claude runtime metadata can identify its current log; otherwise select the actual current conversation from project-scoped records. AgentMux does not guess from the most recently modified log. Selecting history does not resume, replace, or change the running Agent.
 
 For full native controls, tap **+** to create a conversation using the Mac's configured Agent login. These sessions are owned by the daemon and are not tmux panes. Codex model selection applies to the next turn. Supported permissions and user questions appear as forms; unknown request types are never automatically approved. A daemon restart ends its managed child processes, so finish active tasks before restarting.
 
@@ -45,7 +47,7 @@ Pi can use the public SDK in the **same existing process**. Load the supplied ex
 pi -e /absolute/path/to/agentmux/integrations/pi/agentmux.ts
 ```
 
-For loading into an already-running Pi with `/reload`, capability details, and protocol research, see [Agent integration](docs/AGENT-INTEGRATION.md).
+For loading into an already-running Pi with `/reload`, Codex/Claude plugins, capability details and protocol research, see [plugin setup](docs/PLUGINS.md) and [Agent integration](docs/AGENT-INTEGRATION.md).
 
 ## Connection and local configuration
 
@@ -71,9 +73,16 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 python3 scripts/smoke-test.py
 python3 scripts/test-tmux-agents.py
+python3 scripts/test-manual-tmux.py
 node scripts/test-pi-extension.mjs
 # Optional installed Pi SDK loading check; no model request:
 python3 scripts/test-pi-load.py
+# Real offline Pi menu test; no model request:
+python3 scripts/test-real-pi-tui.py
+# Packaged Claude/Codex plugin protocol and Rust API fixtures:
+python3 scripts/package-plugins.py
+npm ci --ignore-scripts --prefix dist/plugins/agentmux-claude
+node scripts/test-plugin-protocols.mjs
 python3.13 -m venv build/test-venv
 build/test-venv/bin/pip install paramiko==3.5.1
 build/test-venv/bin/python scripts/test-ssh-agents.py
@@ -107,9 +116,9 @@ See `docs/VERIFICATION.md` for actual verification evidence and device limitatio
 
 - Structured snapshots are polled, not WebSocket replay; retained in daemon memory. No SQLite history or automatic managed-process resume yet.
 - Message IDs prevent resubmission within a running managed session. A timed-out action may have executed; inspect state before retrying. No persistent cross-restart deduplication.
-- Existing Codex and Claude terminal sessions do not yet have full native protocol attachment. History comes from provider logs; supported controls depend on the connection type.
+- Existing sessions support guarded TUI forwarding without plugins. Native plugins require provider activation: Codex trusted hooks/shared daemon; Claude explicit development Channel opt-in; Pi extension loading. Installing a plugin does not hot-enable every already-running process.
 - Transcript discovery uses provider default layouts and environment overrides. Ambiguous records require explicit selection.
-- TUI input checks depend on recognizable standard editors; custom themes, dialogs, launchers or concurrent Mac typing can prevent safe forwarding.
+- TUI input checks depend on recognizable standard editors and menus. Slash suggestions cover supported built-ins, not every provider command or custom skill. Arbitrary dialogs, free-text questions, custom themes/launchers and concurrent Mac typing still need local handling.
 - No launchd installer, automatic updates, APNs, Android or multi-user roles.
 - Mobile background suspension closes/invalidates transports; reconnect occurs on the next foreground request. Agents continue while the daemon remains running.
 
@@ -135,9 +144,12 @@ Authenticated APIs use `Authorization: Bearer <device credential or local admini
 | GET / POST | `/v1/managed` | Structured session list / create |
 | GET | `/v1/managed/{id}` | Structured snapshot |
 | POST | `/v1/managed/{id}/actions` | Message, model, command, abort, approval |
+| GET | `/v1/plugins` | Active native plugin connections, including externally started processes |
+| GET | `/v1/plugins/{id}/chat` | Native plugin history, commands, capabilities and linked tmux menu |
+| POST | `/v1/plugins/{id}/actions` | PID-bound native actions or explicitly routed original-pane actions |
 | GET / POST | `/v1/sessions` | Running Agent panes across all tmux sessions / legacy create |
 | GET | `/v1/sessions/{id}/chat` | Structured history, conversations and capabilities |
-| POST | `/v1/sessions/{id}/actions` | PID-bound message, Escape, history selection; Pi SDK actions when loaded |
+| POST | `/v1/sessions/{id}/actions` | PID-bound message, menu navigation/confirmation, Escape and optional history selection; Pi SDK actions when loaded |
 | GET | `/v1/sessions/{id}/output` | Legacy terminal snapshot; not used by iOS |
 | POST | `/v1/sessions/{id}/input` / `interrupt` | Legacy terminal control; not used by iOS |
 | GET | `/v1/files?path=...` | Directory list |

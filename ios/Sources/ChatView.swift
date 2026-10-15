@@ -10,7 +10,7 @@ struct AgentModel: Decodable, Identifiable {
     let id: String; let name: String; let provider: String
     var key: String { provider + "/" + id }
 }
-struct SlashCommand: Decodable, Identifiable { var id: String { name }; let name: String; let description: String }
+struct SlashCommand: Decodable, Identifiable { var id: String { name }; let name: String; let description: String; let kind: String? }
 struct AgentQuestionOption: Decodable { let label: String; let description: String }
 struct AgentQuestion: Decodable, Identifiable {
     let id: String; let title: String; let prompt: String; let options: [AgentQuestionOption]
@@ -25,24 +25,27 @@ struct Conversation: Decodable, Identifiable {
     let id: String; let title: String; let modified: UInt64
     var date: Date { Date(timeIntervalSince1970: TimeInterval(modified)) }
 }
+struct AgentMenuChoice: Decodable, Identifiable { let id: Int; let label: String; let selected: Bool }
+struct AgentMenu: Decodable, Identifiable { let id: String; let title: String; let detail: String; let options: [AgentMenuChoice]; let route: String? }
 struct ChatSnapshot: Decodable {
     let messages: [ChatMessage]; let models: [AgentModel]; let commands: [SlashCommand]
     let model: String; let busy: Bool; let alive: Bool; let approvals: [AgentApproval]
     let error: String?; let revision: UInt64
     let capabilities: ChatCapabilities?; let notice: String?; let conversations: [Conversation]?
-    let agentPID: UInt32?; let conversationID: String?; let source: String?
+    let agentPID: UInt32?; let conversationID: String?; let source: String?; let interaction: AgentMenu?; let abortRoute: String?
     enum CodingKeys: String, CodingKey {
-        case messages, models, commands, model, busy, alive, approvals, error, revision, capabilities, notice, conversations, source
-        case agentPID = "agent_pid", conversationID = "conversation_id"
+        case messages, models, commands, model, busy, alive, approvals, error, revision, capabilities, notice, conversations, source, interaction
+        case agentPID = "agent_pid", conversationID = "conversation_id", abortRoute = "abort_route"
     }
 }
 struct ChatAction: Encodable {
     let action: String
     var text = ""; var model = ""; var provider = ""; var requestID = ""; var approved = false
     var agentPID: UInt32?; var conversationID = ""; var answers: [String: [String]] = [:]
+    var menuID = ""; var choice: Int?; var route: String?
     enum CodingKeys: String, CodingKey {
-        case action, text, model, provider, approved, answers
-        case requestID = "request_id", agentPID = "agent_pid", conversationID = "conversation_id"
+        case action, text, model, provider, approved, answers, choice, route
+        case requestID = "request_id", agentPID = "agent_pid", conversationID = "conversation_id", menuID = "menu_id"
     }
 }
 struct ChatView: View {
@@ -58,7 +61,17 @@ struct ChatView: View {
     @State private var confirmStop = false
     @State private var pendingID = UUID().uuidString
     @State private var connectionError: String?
-    private var base: String { session.mode == "structured" ? "/v1/managed/\(session.id)" : "/v1/sessions/\(session.id)" }
+    @State private var attemptedText: String?
+    @FocusState private var composing: Bool
+    private var base: String {
+        let collection = session.mode == "structured" ? "managed" : session.mode == "plugin" ? "plugins" : "sessions"
+        return "/v1/\(collection)/\(session.id)"
+    }
+    private var matchingCommands: [SlashCommand] {
+        guard draft.hasPrefix("/"), !draft.contains(where: { $0.isWhitespace }) else { return [] }
+        let prefix = String(draft.dropFirst()).lowercased()
+        return (snapshot?.commands ?? []).filter { $0.name.lowercased().hasPrefix(prefix) }.prefix(8).map { $0 }
+    }
     private var canSend: Bool { snapshot?.alive == true && (snapshot?.capabilities?.message ?? (snapshot?.busy == false)) && connectionError == nil }
     var body: some View {
         VStack(spacing: 0) {
@@ -90,9 +103,14 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
                         if snapshot?.messages.isEmpty == true {
-                            ContentUnavailableView(snapshot?.source == "tmux" ? "等待对话记录" : "开始对话", systemImage: "bubble.left.and.bubble.right", description: Text(snapshot?.source == "tmux" ? "选择此窗口的会话记录后，可在这里查看消息与工具结果。" : "向 \(session.displayName) 描述你要完成的任务。"))
+                            ContentUnavailableView(snapshot?.source == "tmux" ? "等待对话记录" : "开始对话", systemImage: "bubble.left.and.bubble.right", description: Text(snapshot?.source == "tmux" ? "历史记录可选；消息和操作会转发给当前窗口的 Agent。" : "向 \(session.displayName) 描述你要完成的任务。"))
                         }
                         ForEach(snapshot?.messages ?? []) { message in MessageCard(message: message, agent: session.displayName).id(message.id) }
+                        if let menu = snapshot?.interaction {
+                            AgentMenuCard(menu: menu, disabled: sending) { action, choice in
+                                Task { await apply(ChatAction(action: action, menuID: menu.id, choice: choice, route: menu.route)) }
+                            }
+                        }
                         ForEach(snapshot?.approvals ?? []) { approval in
                             ApprovalView(approval: approval, disabled: sending) { approved, value, answers in
                                 Task { await apply(ChatAction(action: "approval", text: value, requestID: approval.id, approved: approved, answers: answers)) }
@@ -103,13 +121,14 @@ struct ChatView: View {
                 }
                 .onChange(of: snapshot?.messages.count) { _, _ in withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
             }
+            if !matchingCommands.isEmpty { commandCompletions }
             Divider()
             HStack(alignment: .bottom, spacing: 10) {
                 if snapshot?.commands.isEmpty == false {
                     Button { commands = true } label: { Image(systemName: "command") }.accessibilityLabel("可用命令")
                 }
                 TextField("发送给 \(session.displayName)", text: $draft, axis: .vertical)
-                    .lineLimit(1...6).textFieldStyle(.roundedBorder)
+                    .lineLimit(1...6).textFieldStyle(.roundedBorder).focused($composing)
                 Button { send() } label: { Image(systemName: "arrow.up.circle.fill").font(.title) }
                     .accessibilityLabel("发送消息")
                     .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending || !canSend)
@@ -120,7 +139,7 @@ struct ChatView: View {
         .sheet(isPresented: $commands) { commandPanel }
         .sheet(isPresented: $conversations) { conversationPanel }
         .confirmationDialog("停止当前任务？", isPresented: $confirmStop) {
-            Button("停止任务", role: .destructive) { Task { await apply(ChatAction(action: "abort")) } }
+            Button("停止任务", role: .destructive) { Task { await apply(ChatAction(action: "abort", route: snapshot?.abortRoute)) } }
         } message: { Text("保留 Agent 会话及已有对话。") }
         .task(id: phase) {
             guard phase == .active else { return }
@@ -133,6 +152,28 @@ struct ChatView: View {
                 }
             }
         }
+    }
+    private var commandCompletions: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(matchingCommands) { command in
+                    Button {
+                        draft = "/" + command.name + (command.kind == "prompt" ? " " : "")
+                        composing = true
+                    } label: {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: command.kind == "model" ? "slider.horizontal.3" : "command")
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("/" + command.name).font(.subheadline.bold())
+                                Text(command.description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                            Spacer()
+                            Image(systemName: "arrow.turn.down.left").font(.caption).foregroundStyle(.secondary)
+                        }.padding(.horizontal).padding(.vertical, 9).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                }
+            }
+        }.frame(maxHeight: 200).background(Color.secondary.opacity(0.06))
     }
     private var modelPanel: some View {
         NavigationStack {
@@ -154,9 +195,8 @@ struct ChatView: View {
             List(snapshot?.commands ?? []) { command in
                 Button {
                     commands = false
-                    if (session.command == "pi" && ["new", "compact"].contains(command.name)) || (session.command == "codex" && command.name == "compact") {
-                        Task { await apply(ChatAction(action: "command", text: command.name)) }
-                    } else { draft = "/" + command.name + " " }
+                    draft = "/" + command.name
+                    composing = true
                 } label: {
                     VStack(alignment: .leading) {
                         Text("/" + command.name)
@@ -169,7 +209,7 @@ struct ChatView: View {
     private var conversationPanel: some View {
         NavigationStack {
             List {
-                Text("请选择这个 Mac 窗口当前使用的记录。选择只改变展示内容，不会重启或切换 Mac 上的 Agent。").font(.caption).foregroundStyle(.secondary)
+                Text("可选：选择这个窗口的历史记录。消息发送到当前运行的 Agent，选择记录不会重启或切换会话。").font(.caption).foregroundStyle(.secondary)
                 ForEach(snapshot?.conversations ?? []) { conversation in
                     Button {
                         conversations = false
@@ -194,6 +234,7 @@ struct ChatView: View {
     }
     func transmit(_ action: ChatAction) async throws {
         var action = action; action.agentPID = session.agentPID
+        if action.action == "command", action.requestID.isEmpty { action.requestID = UUID().uuidString }
         try await client.send(base + "/actions", value: action)
     }
     func apply(_ action: ChatAction) async {
@@ -204,16 +245,46 @@ struct ChatView: View {
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         if text == "/model", snapshot?.models.isEmpty == false { models = true; return }
+        if attemptedText != text { pendingID = UUID().uuidString; attemptedText = text }
         sending = true
         Task {
             await client.perform {
-                if session.mode == "structured" && ["/compact", "/new"].contains(text) && (session.command == "pi" || (session.command == "codex" && text == "/compact")) {
+                let name = text.dropFirst().split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
+                let nativeCommand = text.hasPrefix("/") && snapshot?.commands.contains(where: { $0.name == name && $0.kind == "command" }) == true
+                if nativeCommand {
+                    try await transmit(ChatAction(action: "command", text: String(text.dropFirst()), requestID: pendingID))
+                } else if session.mode == "structured" && ["/compact", "/new"].contains(text) && (session.command == "pi" || (session.command == "codex" && text == "/compact")) {
                     try await transmit(ChatAction(action: "command", text: String(text.dropFirst())))
-                } else { try await transmit(ChatAction(action: "message", text: text, requestID: pendingID)) }
-                draft = ""; pendingID = UUID().uuidString; try await refresh()
+                } else { let route = text.hasPrefix("/") && snapshot?.commands.contains(where: { $0.name == name && $0.kind == "tui" }) == true ? "tmux" : nil
+                    try await transmit(ChatAction(action: "message", text: text, requestID: pendingID, route: route)) }
+                draft = ""; attemptedText = nil; pendingID = UUID().uuidString; try await refresh()
             }
             sending = false
         }
+    }
+}
+struct AgentMenuCard: View {
+    let menu: AgentMenu
+    let disabled: Bool
+    let act: (String, Int?) -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Agent 等待你的操作", systemImage: "hand.tap").font(.headline)
+            Text(menu.title).font(.subheadline.bold())
+            if !menu.detail.isEmpty, menu.detail != menu.title {
+                DisclosureGroup("查看操作内容") { Text(menu.detail).font(.caption).textSelection(.enabled) }
+            }
+            ForEach(menu.options) { option in
+                Button { act("menu_select", option.id) } label: {
+                    HStack { Image(systemName: option.selected ? "checkmark.circle.fill" : "circle"); Text(option.label); Spacer() }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }.buttonStyle(.bordered)
+            }
+            if let selected = menu.options.first(where: \.selected) {
+                Button("确认：" + selected.label) { act("menu_confirm", nil) }.buttonStyle(.borderedProminent)
+            }
+            Button("返回 / 取消", role: .cancel) { act("menu_cancel", nil) }
+        }.padding().background(Color.accentColor.opacity(0.08)).clipShape(RoundedRectangle(cornerRadius: 16)).disabled(disabled)
     }
 }
 struct MessageCard: View {

@@ -19,6 +19,7 @@ subprocess.run(["cargo", "build"], cwd=repo, check=True)
 tmux = shutil.which("tmux")
 assert tmux, "tmux is required"
 with socket.socket() as probe:
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     probe.bind(("127.0.0.1", 9847))
 with tempfile.TemporaryDirectory(prefix="agentmux-test-") as temporary:
     root = Path(temporary).resolve()
@@ -50,6 +51,7 @@ with tempfile.TemporaryDirectory(prefix="agentmux-test-") as temporary:
         AGENTMUX_CONFIG=str(config_path),
         AGENTMUX_TMUX=str(wrapper),
         AGENTMUX_STATE=str(root / "state"),
+        AGENTMUX_DISCOVERY=str(root / "service.json"),
         AGENTMUX_SSH_DISABLED="1",
     )
     log = (root / "service.log").open("w+")

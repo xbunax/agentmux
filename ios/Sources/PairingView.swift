@@ -7,21 +7,24 @@ import Vision
 struct PairingStatus: View {
     @EnvironmentObject var client: Client
     @State private var scanning = false
+    @State private var connectingSSH = false
     @State private var forget = false
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let mac = client.paired {
                 Label(mac.host, systemImage: "lock.shield.fill").foregroundStyle(.green)
-                Text("SSH 加密 · 主机密钥已固定").font(.caption).foregroundStyle(.secondary)
-                Button("撤销此设备配对", role: .destructive) { forget = true }
+                Text(mac.sshLogin == nil ? "SSH 加密 · 主机密钥已固定" : "\(mac.username)@\(mac.host):\(mac.port) · SSH 加密").font(.caption).foregroundStyle(.secondary)
+                Button("断开并移除此设备", role: .destructive) { forget = true }
             } else {
-                Text("在 Mac 运行 agentmuxd pair，扫描显示的二维码即可连接。无需输入用户名或密码。").font(.subheadline)
-                Button { scanning = true } label: { Label("扫码配对 Mac", systemImage: "qrcode.viewfinder") }.buttonStyle(.borderedProminent)
+                Text("使用 Mac 的 SSH 登录信息连接，自动发现 AgentMux 服务。无需生成二维码。").font(.subheadline)
+                Button { connectingSSH = true } label: { Label("通过 SSH 连接 Mac", systemImage: "terminal") }.buttonStyle(.borderedProminent)
+                Button { scanning = true } label: { Label("使用二维码连接", systemImage: "qrcode.viewfinder") }
             }
         }
         .sheet(isPresented: $scanning) { PairingSheet() }
-        .confirmationDialog("撤销后需要重新扫描二维码", isPresented: $forget) {
-            Button("撤销配对", role: .destructive) { Task { await client.forget() } }
+        .sheet(isPresented: $connectingSSH) { SSHConnectionSheet() }
+        .confirmationDialog("移除此设备的 AgentMux 凭据并断开连接？", isPresented: $forget) {
+            Button("移除并断开", role: .destructive) { Task { await client.forget() } }
         }
     }
 }
@@ -39,7 +42,7 @@ struct PairingSheet: View {
                     Image(systemName: "lock.shield").font(.system(size: 64)).foregroundStyle(.blue)
                     Text("连接到 \(code.host)").font(.title2)
                     Text("请确认二维码来自你自己的 Mac。配对将允许此手机操作授权目录中的 Agent 和文件。").padding(.horizontal)
-                    Text(fingerprint(code.hostKey)).font(.caption.monospaced()).textSelection(.enabled)
+                    Text(sshFingerprint(code.hostKey)).font(.caption.monospaced()).textSelection(.enabled)
                     Button(busy ? "正在校验主机并配对…" : "确认配对") {
                         busy = true
                         Task {
@@ -81,11 +84,11 @@ struct PairingSheet: View {
             candidate = code; error = nil
         } catch { self.error = "二维码无效或已过期，请在 Mac 重新运行 agentmuxd pair" }
     }
-    func fingerprint(_ key: String) -> String {
-        let pieces = key.split(separator: " ")
-        guard pieces.count >= 2, let data = Data(base64Encoded: String(pieces[1])) else { return "无效主机公钥" }
-        return "SHA256:" + Data(SHA256.hash(data: data)).base64EncodedString().replacingOccurrences(of: "=", with: "")
-    }
+}
+func sshFingerprint(_ key: String) -> String {
+    let pieces = key.split(separator: " ")
+    guard pieces.count >= 2, let data = Data(base64Encoded: String(pieces[1])) else { return "无效主机公钥" }
+    return "SHA256:" + Data(SHA256.hash(data: data)).base64EncodedString().replacingOccurrences(of: "=", with: "")
 }
 struct CameraScanner: UIViewControllerRepresentable {
     let onCode: (String) -> Void
@@ -99,28 +102,43 @@ final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsD
     private let onCode: (String) -> Void
     private var preview: AVCaptureVideoPreviewLayer?
     private var found = false
+    // Access only on queue, including permission callbacks and teardown.
+    private var stopped = false
     init(onCode: @escaping (String) -> Void) { self.onCode = onCode; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { nil }
     override func viewDidLoad() {
         super.viewDidLoad()
+        let preview = AVCaptureVideoPreviewLayer(session: capture)
+        preview.videoGravity = .resizeAspectFill
+        view.layer.addSublayer(preview)
+        self.preview = preview
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             guard granted else { return }
-            DispatchQueue.main.async { self?.configure() }
+            self?.queue.async { [weak self] in self?.configure() }
         }
     }
     private func configure() {
-        guard let device = AVCaptureDevice.default(for: .video), let input = try? AVCaptureDeviceInput(device: device), capture.canAddInput(input) else { return }
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard !stopped, configureSession() else { return }
+        capture.startRunning()
+    }
+    private func configureSession() -> Bool {
+        capture.beginConfiguration()
+        defer { capture.commitConfiguration() }
+        guard let device = AVCaptureDevice.default(for: .video), let input = try? AVCaptureDeviceInput(device: device), capture.canAddInput(input) else { return false }
         capture.addInput(input)
         let output = AVCaptureMetadataOutput()
-        guard capture.canAddOutput(output) else { return }
+        guard capture.canAddOutput(output) else { return false }
         capture.addOutput(output); output.setMetadataObjectsDelegate(self, queue: .main); output.metadataObjectTypes = [.qr]
-        let preview = AVCaptureVideoPreviewLayer(session: capture)
-        preview.videoGravity = .resizeAspectFill; view.layer.addSublayer(preview); self.preview = preview
-        preview.frame = view.bounds
-        queue.async { [capture] in capture.startRunning() }
+        return true
     }
     override func viewDidLayoutSubviews() { super.viewDidLayoutSubviews(); preview?.frame = view.bounds }
-    func stop() { queue.async { [capture] in capture.stopRunning() } }
+    func stop() {
+        queue.async { [self] in
+            stopped = true
+            if capture.isRunning { capture.stopRunning() }
+        }
+    }
     func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput objects: [AVMetadataObject], from connection: AVCaptureConnection) {
         guard !found, let code = objects.first as? AVMetadataMachineReadableCodeObject, let value = code.stringValue else { return }
         found = true; stop(); onCode(value)

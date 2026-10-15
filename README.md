@@ -4,6 +4,7 @@ Rust macOS service + SwiftUI iOS client. Version 0.2 development build.
 
 ## Features
 
+- Connect with an existing Mac SSH login (password or OpenSSH private key); verify the host fingerprint, then discover AgentMux and enroll automatically. No QR required. Credentials are saved in iOS Keychain.
 - QR pairing: scan the Mac-generated code (camera or photo), confirm the Mac and host-key fingerprint, and connect without typing credentials.
 - Built-in SSH on port 9848. The iOS client pins the Ed25519 host key from the QR and forwards HTTP directly inside encrypted SSH channels. No remote shell, arbitrary TCP forwarding or macOS SSH setup is required.
 - Five-minute single-use enrollment tickets; random per-device credentials stored in iOS Keychain, hashed on the Mac; device revocation.
@@ -14,17 +15,25 @@ Rust macOS service + SwiftUI iOS client. Version 0.2 development build.
 - File listing and upload/download up to 8 MiB, without overwrite; capability-confined file access.
 - Unsigned arm64 device IPA build script.
 
-## Quick start: Mac → QR → iPhone
+## Quick start: Mac → SSH → iPhone
 
 Requirements: Rust, tmux, installed/logged-in Codex / Claude Code / Pi. iOS 17+; Xcode and XcodeGen for builds.
 
 ```sh
-cp agentmux.example.json agentmux.json
-# Set existing project roots and actual executable paths (command -v codex/claude/pi).
-# Prefer a dedicated project root, never the whole home directory.
 cargo build --release
+# Run from the project directory you want to access from your phone.
 ./target/release/agentmuxd
 ```
+
+On first launch, the daemon creates `agentmux.json` with private permissions, authorizes the current directory, and detects Codex / Claude / Pi executables on `PATH`. Missing agents retain their command names and can be installed later. Existing configuration is preserved; malformed configuration reports an error. To expose another project, launch the binary from that project's directory. You can edit `agentmux.json` locally to authorize additional existing directories or customize executable paths, then restart the daemon. `agentmux.example.json` remains available as a reference.
+
+Enable **System Settings → General → Sharing → Remote Login** on the Mac. In the iOS app, choose **通过 SSH 连接 Mac**, enter the Mac hostname/IP, SSH port (default 22), username, and password or private key. Verify the displayed SSH fingerprint, then choose **信任主机并连接**. The app discovers the running daemon and connects automatically through the same SSH connection; no `agentmuxd pair` command or open port 9848 is needed for this mode. SSH command execution and local TCP forwarding must be allowed for the account.
+
+The daemon publishes a private discovery file at `~/Library/Application Support/AgentMux/service.json`. The app uses SSH to locate the binary and run `agentmuxd connect`, which checks the loopback service on port 9847 and creates a revocable device credential. The administrator token stays on the Mac. The SSH fingerprint is pinned for future connections. Ed25519 OpenSSH keys, including passphrase-protected keys, are supported; RSA compatibility depends on the SSH server accepting the library's RSA signature algorithm. SSH agent forwarding and hardware-backed keys are not implemented. `AGENTMUX_DISCOVERY` overrides the discovery file path; a custom path must also be available in the remote SSH environment.
+
+## Optional QR connection
+
+QR connection uses AgentMux's dedicated SSH listener and does not require macOS Remote Login.
 
 In a second terminal, from the same directory:
 
@@ -83,6 +92,16 @@ swift build --scratch-path build/swift-probe --product SSHProbe
 AGENTMUX_PAIR_JSON="$PWD/.agentmux/pair.json" build/swift-probe/debug/SSHProbe
 ```
 
+To test normal SSH discovery without QR or the port-9848 listener:
+
+```sh
+cargo build
+swift build --scratch-path build/ssh-login-probe --disable-build-manifest-caching --product SSHProbe
+build/test-venv/bin/python scripts/test-ssh-login.py
+```
+
+This starts an isolated Paramiko SSH server and checks password and encrypted Ed25519 authentication, service discovery, automatic enrollment, forwarding, reconnect, revocation, and rejection of changed host keys. It does not replace real-iPhone testing of camera permissions and background transitions.
+
 See `docs/VERIFICATION.md` for actual verification evidence and device limitations, when available. A successful device build or desktop SSH test is not an iPhone end-to-end test.
 
 ## Limitations
@@ -98,6 +117,8 @@ See `docs/VERIFICATION.md` for actual verification evidence and device limitatio
 
 Single trusted-user service. Pairing grants terminal/Agent control as the Mac user. Directory filters are **not an Agent sandbox**: tools and terminal processes may access other files. Avoid sensitive files in approved roots. Secrets are not content-classified on download. Use trusted QR codes only; credentials in a QR ticket are sensitive until expiration. SSH private host keys never leave the Mac.
 
+Keep the discovery file private: it contains the local administrator credential and is created with mode `0600`. In normal SSH mode, removing a device revokes its AgentMux API credential; the Mac SSH account can still authenticate and enroll again until its SSH access is removed separately.
+
 Remote clients cannot change agent executable paths or exceed roots loaded at startup. Narrowed roots persist and become the new ceiling after restart. Device removal immediately denies HTTP actions and new SSH authentications; it does not forcibly terminate an already-open SSH transport, which remains limited to the now-auth-denied API.
 
 ## API
@@ -109,6 +130,7 @@ Authenticated APIs use `Authorization: Bearer <device credential or local admini
 | POST | `/v1/pair/issue` | Local-admin-only QR ticket creation |
 | POST | `/v1/pair/complete` | Exchange SSH-authenticated single-use ticket |
 | GET / DELETE | `/v1/devices` / `/v1/devices/{id}` | Devices / revoke |
+| POST | `/v1/devices` | Local-admin-only enrollment for authenticated SSH discovery |
 | GET / PUT | `/v1/settings` | Configuration |
 | GET / POST | `/v1/managed` | Structured session list / create |
 | GET | `/v1/managed/{id}` | Structured snapshot |

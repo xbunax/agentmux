@@ -80,6 +80,23 @@ mod tests {
         );
         assert!(!pairing.authenticate(&expired));
     }
+    #[test]
+    fn ssh_enrollment_persists_only_a_hash_and_rejects_invalid_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let pairing = Pairing::load(directory.path().to_path_buf()).unwrap();
+        let enrolled = pairing.enroll_device("SSH phone".into()).unwrap();
+        let token = enrolled["token"].as_str().unwrap();
+        assert!(pairing.valid_device(token));
+        let path = directory.path().join("devices.json");
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains(token));
+        assert!(saved.contains(&digest(token)));
+        assert!(pairing.enroll_device(" ".into()).is_err());
+        assert!(pairing.enroll_device("x".repeat(101)).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        let reloaded = Pairing::load(directory.path().to_path_buf()).unwrap();
+        assert!(reloaded.valid_device(token));
+    }
 }
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Device {
@@ -145,6 +162,28 @@ impl Pairing {
     pub fn valid_device(&self, token: &str) -> bool {
         let hash = digest(token);
         self.devices.lock().unwrap().iter().any(|d| d.hash == hash)
+    }
+    fn enroll_device(&self, name: String) -> Result<serde_json::Value> {
+        if name.len() > 100 || name.trim().is_empty() {
+            return Err(bad("Device name must contain 1–100 bytes"));
+        }
+        let token = secret();
+        let device = Device {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            hash: digest(&token),
+            created: now(),
+        };
+        let mut devices = self.devices.lock().unwrap();
+        let mut next = devices.clone();
+        next.push(device.clone());
+        private_write(
+            &self.directory.join("devices.json"),
+            &serde_json::to_vec(&next).map_err(internal)?,
+        )
+        .map_err(internal)?;
+        *devices = next;
+        Ok(serde_json::json!({"token": token, "device_id": device.id}))
     }
     fn authenticate(&self, password: &str) -> bool {
         if self.valid_device(password) {
@@ -240,26 +279,25 @@ pub async fn complete(
             "Pairing expired or already used; generate a new QR code".into(),
         ));
     }
-    let token = secret();
-    let device = Device {
-        id: uuid::Uuid::new_v4().to_string(),
-        name: request.name,
-        hash: digest(&token),
-        created: now(),
-    };
-    let mut devices = app.pairing.devices.lock().unwrap();
-    let mut next = devices.clone();
-    next.push(device.clone());
-    private_write(
-        &app.pairing.directory.join("devices.json"),
-        &serde_json::to_vec(&next).map_err(internal)?,
-    )
-    .map_err(internal)?;
-    *devices = next;
+    let result = app.pairing.enroll_device(request.name)?;
     tickets.remove(&hash);
-    Ok(Json(
-        serde_json::json!({"token": token, "device_id": device.id}),
-    ))
+    Ok(Json(result))
+}
+#[derive(Deserialize)]
+pub struct Enrollment {
+    name: String,
+}
+pub async fn enroll(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Json(request): Json<Enrollment>,
+) -> Result<Json<serde_json::Value>> {
+    if headers.get("authorization").and_then(|h| h.to_str().ok())
+        != Some(&format!("Bearer {}", app.token))
+    {
+        return Err((StatusCode::FORBIDDEN, "Local administrator required".into()));
+    }
+    Ok(Json(app.pairing.enroll_device(request.name)?))
 }
 pub async fn devices(
     State(app): State<Shared>,
@@ -340,8 +378,11 @@ impl server::Handler for Ssh {
             Ok(mut socket) => {
                 reply.accept().await;
                 tokio::spawn(async move {
-                    let mut stream = channel.into_stream();
-                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut socket).await;
+                    let mut channel = channel;
+                    if let Err(error) = forward_api(&mut channel, &mut socket).await {
+                        eprintln!("SSH API forwarding failed: {error}");
+                    }
+                    let _ = channel.close().await;
                 });
             }
             Err(_) => {
@@ -349,6 +390,35 @@ impl server::Handler for Ssh {
             }
         }
         Ok(())
+    }
+}
+async fn forward_api(
+    channel: &mut russh::Channel<server::Msg>,
+    socket: &mut tokio::net::TcpStream,
+) -> std::io::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buffer = vec![0; 32 * 1024];
+    let mut response_open = true;
+    loop {
+        tokio::select! {
+            response = socket.read(&mut buffer), if response_open => {
+                let count = response?;
+                if count == 0 {
+                    response_open = false;
+                    // Preserve the read half until the client has consumed the response
+                    // and closes its SSH channel. TCP EOF is only a half-close.
+                    channel.eof().await.map_err(std::io::Error::other)?;
+                } else {
+                    channel.data(&buffer[..count]).await.map_err(std::io::Error::other)?;
+                }
+            }
+            message = channel.wait() => match message {
+                Some(russh::ChannelMsg::Data { data }) => socket.write_all(&data).await?,
+                Some(russh::ChannelMsg::Eof) => socket.shutdown().await?,
+                Some(russh::ChannelMsg::Close) | None => return Ok(()),
+                _ => {}
+            }
+        }
     }
 }
 pub async fn serve(pairing: Arc<Pairing>) -> std::io::Result<()> {
@@ -369,7 +439,10 @@ pub async fn pair_cli(
     directory: &FsPath,
     host: String,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()?;
     let response = client
         .post("http://127.0.0.1:9847/v1/pair/issue")
         .bearer_auth(token)

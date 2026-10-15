@@ -27,6 +27,7 @@ repo = Path(__file__).resolve().parent.parent
 binary = os.environ.get("AGENTMUX_BINARY", str(repo / "target/debug/agentmuxd"))
 for port in [9847, 9848]:
     with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind(("127.0.0.1", port))
 
 
@@ -70,6 +71,7 @@ with tempfile.TemporaryDirectory(prefix="agentmux-ssh-test-") as temporary:
         AGENTMUX_TOKEN=admin,
         AGENTMUX_CONFIG=str(config),
         AGENTMUX_STATE=str(root / "state"),
+        AGENTMUX_DISCOVERY=str(root / "service.json"),
         AGENTMUX_SSH_BIND="127.0.0.1:9848",
     )
     env.pop("AGENTMUX_SSH_DISABLED", None)

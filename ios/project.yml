@@ -13,6 +13,9 @@ packages:
   swift-nio-ssh:
     url: https://github.com/Wellz26/swift-nio-ssh.git
     from: 0.3.4
+  swift-crypto:
+    url: https://github.com/apple/swift-crypto.git
+    from: 3.0.0
 targets:
   AgentMux:
     type: application
@@ -26,6 +29,8 @@ targets:
         product: NIOHTTP1
       - package: swift-nio-ssh
         product: NIOSSH
+      - package: swift-crypto
+        product: Crypto
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.agentmux.app

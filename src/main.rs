@@ -1,4 +1,6 @@
 mod agents;
+mod config;
+mod discovery;
 mod pairing;
 
 use axum::{
@@ -385,6 +387,10 @@ async fn upload(
 }
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("connect") {
+        return discovery::connect_cli(std::env::args().nth(2).unwrap_or("SSH device".into()))
+            .await;
+    }
     let state_dir = PathBuf::from(std::env::var("AGENTMUX_STATE").unwrap_or(".agentmux".into()));
     let pairing = pairing::Pairing::load(state_dir.clone())?;
     let token_path = state_dir.join("admin.token");
@@ -420,7 +426,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
     let config_path =
         PathBuf::from(std::env::var("AGENTMUX_CONFIG").unwrap_or("agentmux.json".into()));
-    let config: Config = serde_json::from_slice(&tokio::fs::read(&config_path).await?)?;
+    let config = config::load_or_create(&config_path)?;
     let ceiling: Vec<PathBuf> = config
         .roots
         .iter()
@@ -446,7 +452,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let router = Router::new()
         .route("/v1/pair/issue", post(pairing::issue))
         .route("/v1/pair/complete", post(pairing::complete))
-        .route("/v1/devices", get(pairing::devices))
+        .route("/v1/devices", get(pairing::devices).post(pairing::enroll))
         .route("/v1/devices/{id}", axum::routing::delete(pairing::revoke))
         .route("/v1/managed", get(agents::list).post(agents::create))
         .route("/v1/managed/{id}", get(agents::snapshot))
@@ -459,19 +465,21 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .route("/v1/files", get(files))
         .route("/v1/file", get(download).put(upload))
         .layer(DefaultBodyLimit::max(MAX_FILE))
-        .with_state(app);
+        .with_state(app.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:9847").await?;
+    discovery::publish(&app)?;
     if std::env::var_os("AGENTMUX_SSH_DISABLED").is_none() {
         tokio::spawn(async move {
             if let Err(error) = pairing::serve(pairing).await {
                 eprintln!("SSH transport stopped: {error}");
             }
         });
-        eprintln!(
-            "AgentMux SSH on port 9848. Run `agentmuxd pair [Mac-IP-or-Tailscale-host]` to pair."
-        );
+        eprintln!("Optional QR SSH on port 9848: `agentmuxd pair [Mac-IP-or-Tailscale-host]`.");
     }
     eprintln!("agentmuxd API on 127.0.0.1:9847");
+    eprintln!(
+        "In the iPhone app, choose SSH connection and sign in to this Mac to discover AgentMux automatically."
+    );
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

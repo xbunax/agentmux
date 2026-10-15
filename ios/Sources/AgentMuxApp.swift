@@ -47,6 +47,19 @@ enum Keychain {
     @Published var paired: PairedMac? = try? JSONDecoder().decode(PairedMac.self, from: Data(Keychain.load(account: "paired-mac").utf8))
     @Published var error: String?
     let ssh = SSHTransport()
+    func connectSSH(host: String, port: Int, username: String, hostKey: String, login: SSHLogin) async throws {
+        let mac = try await ssh.connectSSH(host: host, port: port, username: username, hostKey: hostKey, login: login, deviceName: "AgentMux iPhone")
+        do {
+            try Task.checkCancellation()
+            try Keychain.save(String(decoding: JSONEncoder().encode(mac), as: UTF8.self), account: "paired-mac")
+        } catch {
+            _ = try? await ssh.request(profile: mac, path: "/v1/devices/\(mac.deviceID)", method: "DELETE", token: mac.credential, body: nil)
+            await ssh.disconnect()
+            throw error
+        }
+        paired = mac
+        error = nil
+    }
     func pair(_ code: PairCode) async throws {
         guard code.version == 1, code.expires > UInt64(Date().timeIntervalSince1970),
               code.port == 9848, code.username == "agentmux", code.ticket.count >= 32,
@@ -71,7 +84,7 @@ enum Keychain {
         }
     }
     func request(_ path: String, method: String = "GET", body: Data? = nil, query: [URLQueryItem] = []) async throws -> Data {
-        guard let paired else { throw NSError(domain: "AgentMux", code: 1, userInfo: [NSLocalizedDescriptionKey: "请先扫描 Mac 上的配对二维码"]) }
+        guard let paired else { throw NSError(domain: "AgentMux", code: 1, userInfo: [NSLocalizedDescriptionKey: "请先通过 SSH 连接 Mac"]) }
         var url = URLComponents(); url.path = path; url.queryItems = query.isEmpty ? nil : query
         guard let uri = url.string else { throw URLError(.badURL) }
         let response = try await ssh.request(profile: paired, path: uri, method: method, token: paired.credential, body: body)
@@ -114,6 +127,9 @@ struct SessionList: View {
         NavigationStack {
             List {
                 Section { PairingStatus() }
+                if sessions.isEmpty, client.paired != nil {
+                    ContentUnavailableView("暂无会话", systemImage: "terminal", description: Text("下拉刷新，或创建 Agent"))
+                }
                 ForEach(sessions) { session in
                     NavigationLink {
                         if session.mode == "structured" { ChatView(session: session) }
@@ -127,7 +143,6 @@ struct SessionList: View {
                     }
                 }
             }
-            .overlay { if sessions.isEmpty { ContentUnavailableView("暂无会话", systemImage: "terminal", description: Text("配置连接后下拉刷新，或创建 Agent")) } }
             .navigationTitle("AgentMux")
             .toolbar { Button { creating = true } label: { Image(systemName: "plus") }; Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") } }
             .refreshable { await refresh() }

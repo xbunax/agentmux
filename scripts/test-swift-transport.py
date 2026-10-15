@@ -29,6 +29,7 @@ with tempfile.TemporaryDirectory(prefix="agentmux-swift-") as temporary:
         os.environ,
         AGENTMUX_CONFIG=str(config),
         AGENTMUX_STATE=str(root / "state"),
+        AGENTMUX_DISCOVERY=str(root / "service.json"),
         AGENTMUX_SSH_BIND="127.0.0.1:9848",
     )
     env.pop("AGENTMUX_TOKEN", None)
@@ -53,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix="agentmux-swift-") as temporary:
         )
         env["AGENTMUX_PAIR_JSON"] = str(root / "state/pair.json")
         subprocess.run(
-            [str(repo / "build/swift-probe/debug/SSHProbe")],
+            [os.environ.get("AGENTMUX_SSH_PROBE", str(repo / "build/swift-probe/debug/SSHProbe"))],
             env=env,
             check=True,
             timeout=90,

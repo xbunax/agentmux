@@ -12,6 +12,8 @@ Citadel 0.12.1 is pinned. Rust russh provides a dedicated port-9848 SSH endpoint
 
 Acceptance still requires: runtime interoperability, real-device installation and foreground/background recovery. Compiling an arm64 IPA is not device-connectivity evidence.
 
+Normal Mac SSH login is now the primary connection flow: inspect and pin the host key, authenticate with password or an OpenSSH key, discover the private service descriptor, then enroll a revocable device credential over SSH. All API requests continue through that SSH connection. QR remains optional. Camera configuration/start/stop share one serial queue to prevent teardown during capture configuration.
+
 ## Milestone C — structured adapters (implemented, provider testing)
 
 Record actual installed versions and official protocols for Codex, Claude Code and Pi. Test session creation, streaming events, cancellation, permissions, supported model selection, slash command enumeration, session resume, and GUI/terminal capability differences independently. Pi-specific implementation must follow its installed SDK/RPC/extension documentation.

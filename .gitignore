@@ -1,0 +1,9 @@
+/target/
+/build/
+/.build/
+/dist/
+/.pi/
+/ios/AgentMux.xcodeproj/
+/agentmux.json
+/.agentmux/
+.DS_Store

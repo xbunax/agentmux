@@ -1,0 +1,10 @@
+{
+  "revision": 0,
+  "roots": ["/Users/YOUR_USER/Projects"],
+  "default_directory": "/Users/YOUR_USER/Projects",
+  "agents": {
+    "codex": "/opt/homebrew/bin/codex",
+    "claude": "/opt/homebrew/bin/claude",
+    "pi": "/opt/homebrew/bin/pi"
+  }
+}

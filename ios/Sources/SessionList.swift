@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SessionRow: View {
+    @Environment(\.appTheme) private var theme
     let session: AgentSession
     var pinned = false
     var body: some View {
@@ -8,17 +9,17 @@ struct SessionRow: View {
             AgentAvatar(command: session.command, size: 52)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(session.windowName ?? session.displayName).font(.body.weight(.semibold)).lineLimit(1)
+                    Text(session.projectName).font(.body.weight(.semibold)).lineLimit(1)
                     Spacer(minLength: 8)
-                    if pinned { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(AppTheme.secondary) }
-                    Text(session.sourceName).font(.caption2.weight(.medium)).foregroundStyle(AppTheme.secondary)
+                    if pinned { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(theme.secondary) }
+                    Text(session.sourceName).font(.caption2.weight(.medium)).foregroundStyle(theme.secondary)
                 }
-                Text(session.displayName + " · " + session.projectName)
-                    .font(.subheadline).foregroundStyle(AppTheme.secondary).lineLimit(1)
-                Text(session.directory).font(.caption).foregroundStyle(AppTheme.secondary.opacity(0.8))
+                Text(session.displayName)
+                    .font(.subheadline).foregroundStyle(theme.secondary).lineLimit(1)
+                Text(session.directory).font(.caption).foregroundStyle(theme.secondary.opacity(0.8))
                     .lineLimit(1).truncationMode(.middle)
             }
-        }.foregroundStyle(AppTheme.text).padding(.vertical, 12).padding(.horizontal, 18)
+        }.foregroundStyle(theme.text).padding(.vertical, 12).padding(.horizontal, 18)
             .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
     }
 }
@@ -29,6 +30,7 @@ private struct SessionGroup: Identifiable {
 }
 
 struct SessionList: View {
+    @Environment(\.appTheme) private var theme
     @EnvironmentObject var client: Client
     @Environment(\.scenePhase) var phase
     @AppStorage("pinned-sessions") private var pinnedData = "[]"
@@ -73,11 +75,11 @@ struct SessionList: View {
                             Label("连接暂不可用", systemImage: "wifi.exclamationmark").font(.subheadline.weight(.semibold))
                             Text(loadError).font(.caption).lineLimit(3).textSelection(.enabled)
                             Button("重新连接") { Task { await refresh() } }.frame(minHeight: 44)
-                        }.foregroundStyle(AppTheme.warning).padding(.vertical, 4)
-                    }.listRowBackground(AppTheme.surface)
+                        }.foregroundStyle(theme.warning).padding(.vertical, 4)
+                    }.listRowBackground(theme.surface)
                 }
                 if loading && sessions.isEmpty {
-                    HStack(spacing: 10) { ProgressView(); Text("正在查找你的 Agent…").font(.subheadline).foregroundStyle(AppTheme.secondary) }
+                    HStack(spacing: 10) { ProgressView(); Text("正在查找你的 Agent…").font(.subheadline).foregroundStyle(theme.secondary) }
                         .padding(.vertical, 30).frame(maxWidth: .infinity).listRowBackground(Color.clear).listRowSeparator(.hidden)
                 } else if client.paired != nil && filtered.isEmpty && loadError == nil {
                     EmptyState(symbol: search.isEmpty && provider == "all" ? "bubble.left.and.bubble.right" : "magnifyingglass",
@@ -89,7 +91,7 @@ struct SessionList: View {
                 if !favorites.isEmpty { sessionSection("置顶", values: favorites) }
                 ForEach(groups) { group in sessionSection(group.id, values: group.sessions) }
             }
-            .listStyle(.plain).listSectionSpacing(12).appList()
+            .appList()
             .navigationTitle("会话").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -118,7 +120,7 @@ struct SessionList: View {
             .sheet(isPresented: $creating, onDismiss: { Task { await refresh() } }) { CreateSession() }
             .sheet(isPresented: $connectionDetails) {
                 NavigationStack {
-                    ScrollView { PairingStatus().padding() }.background(AppTheme.background)
+                    ScrollView { PairingStatus().padding() }.background(AppBackdrop())
                         .navigationTitle("Mac 连接").navigationBarTitleDisplayMode(.inline).toolbar { Button("完成") { connectionDetails = false } }
                 }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
             }
@@ -134,8 +136,8 @@ struct SessionList: View {
                             Text(title).font(.subheadline.weight(provider == value ? .semibold : .regular))
                             if value == "all" { Text("\(sessions.count)").font(.caption.monospacedDigit()) }
                         }.padding(.horizontal, 14).frame(minHeight: 44)
-                            .foregroundStyle(provider == value ? AppTheme.accent : AppTheme.secondary)
-                            .background(provider == value ? AppTheme.accent.opacity(0.12) : AppTheme.surface, in: Capsule())
+                            .foregroundStyle(provider == value ? theme.accent : theme.secondary)
+                            .background(provider == value ? theme.accent.opacity(0.12) : theme.surface, in: Capsule())
                     }.buttonStyle(.plain).accessibilityAddTraits(provider == value ? .isSelected : [])
                 }
             }
@@ -146,9 +148,9 @@ struct SessionList: View {
             ForEach(values) { session in
                 NavigationLink(value: session) { SessionRow(session: session, pinned: pinned.contains(session.key)) }
                     .buttonStyle(.plain).listRowInsets(EdgeInsets())
-                    .listRowBackground(AppTheme.surface).listRowSeparatorTint(AppTheme.line)
+                    .listRowBackground(theme.surface).listRowSeparatorTint(theme.line)
                     .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                        Button { togglePin(session) } label: { Label(pinned.contains(session.key) ? "取消置顶" : "置顶", systemImage: "pin") }.tint(AppTheme.accent)
+                        Button { togglePin(session) } label: { Label(pinned.contains(session.key) ? "取消置顶" : "置顶", systemImage: "pin") }.tint(theme.accent)
                     }
                     .contextMenu {
                         Button { togglePin(session) } label: { Label(pinned.contains(session.key) ? "取消置顶" : "置顶", systemImage: "pin") }
@@ -156,7 +158,7 @@ struct SessionList: View {
             }
         } header: {
             HStack { Text(title); Spacer(); Text("\(values.count)").monospacedDigit() }
-                .font(.caption.weight(.semibold)).foregroundStyle(AppTheme.secondary).textCase(nil)
+                .font(.caption.weight(.semibold)).foregroundStyle(theme.secondary).textCase(nil)
                 .padding(.top, 10).padding(.bottom, 5)
         }
     }
@@ -181,6 +183,7 @@ struct SessionList: View {
 }
 
 struct CreateSession: View {
+    @Environment(\.appTheme) private var theme
     @EnvironmentObject var client: Client
     @Environment(\.dismiss) var dismiss
     @State private var agent = "codex"
@@ -192,7 +195,7 @@ struct CreateSession: View {
                 Section {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("让 Agent 开始工作").font(.title2.weight(.semibold))
-                        Text("选择助手和项目，继续在 Mac 上完成任务。").font(.subheadline).foregroundStyle(AppTheme.secondary)
+                        Text("选择助手和项目，继续在 Mac 上完成任务。").font(.subheadline).foregroundStyle(theme.secondary)
                     }.padding(.vertical, 10)
                 }.listRowBackground(Color.clear)
                 Section("选择 Agent") {
@@ -200,18 +203,18 @@ struct CreateSession: View {
                         Button { agent = value } label: {
                             HStack(spacing: 12) {
                                 AgentAvatar(command: value, size: 38)
-                                Text(value == "claude" ? "Claude Code" : value == "pi" ? "Pi" : "Codex").foregroundStyle(AppTheme.text)
+                                Text(value == "claude" ? "Claude Code" : value == "pi" ? "Pi" : "Codex").foregroundStyle(theme.text)
                                 Spacer()
-                                Image(systemName: agent == value ? "checkmark.circle.fill" : "circle").foregroundStyle(agent == value ? AppTheme.accent : AppTheme.secondary)
+                                Image(systemName: agent == value ? "checkmark.circle.fill" : "circle").foregroundStyle(agent == value ? theme.accent : theme.secondary)
                             }.padding(.vertical, 4)
                         }
                     }
-                }.listRowBackground(AppTheme.surface)
+                }.listRowBackground(theme.surface)
                 Section {
                     TextField("Mac 上的绝对目录", text: $directory).font(.subheadline.monospaced())
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                 } header: { Text("项目目录") } footer: { Text("使用 Mac 上已登录的 Agent。目录须在授权范围内。") }
-                    .listRowBackground(AppTheme.surface)
+                    .listRowBackground(theme.surface)
                 Section {
                     Button {
                         busy = true
@@ -231,6 +234,7 @@ struct CreateSession: View {
 
 
 struct GenericPanePicker: View {
+    @Environment(\.appTheme) private var theme
     @EnvironmentObject var client: Client
     @Environment(\.dismiss) var dismiss
     @State private var panes: [AgentSession] = []
@@ -238,8 +242,8 @@ struct GenericPanePicker: View {
     var body: some View {
         NavigationStack {
             List {
-                Section { Text("选择原有 pane 后确认控制目标。未知程序和 shell 也可进入通用终端，不会启动替代进程。").font(.subheadline) }
-                if let error { Text(error).foregroundStyle(AppTheme.warning) }
+                Section { Text("选择终端后即可连接，手机与 Mac 共用同一个会话。未知程序和 shell 也可使用。").font(.subheadline) }
+                if let error { Text(error).foregroundStyle(theme.warning) }
                 ForEach(panes) { pane in NavigationLink(value: pane) { SessionRow(session: pane) } }
             }.appList().navigationTitle("通用终端")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }

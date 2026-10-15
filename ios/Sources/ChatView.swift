@@ -73,6 +73,7 @@ struct ChatDraftState {
 struct LocalEcho { let message: ChatMessage; let historyCount: Int }
 
 struct ChatView: View {
+    @Environment(\.appTheme) private var theme
     @EnvironmentObject var client: Client
     @Environment(\.scenePhase) var phase
     @State private var session: AgentSession
@@ -141,11 +142,11 @@ struct ChatView: View {
     }
     var body: some View {
         timeline
-            .background(AppTheme.chat)
+            .background(AppBackdrop())
             .safeAreaInset(edge: .bottom, spacing: 0) { composer }
             .navigationTitle(session.displayName).navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .tabBar)
-            .toolbarBackground(AppTheme.surface, for: .navigationBar).toolbarBackground(.visible, for: .navigationBar)
+            .toolbarBackground(.automatic, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     Button { sessionPicker = true } label: {
@@ -153,9 +154,9 @@ struct ChatView: View {
                             AgentAvatar(command: session.command, size: 34)
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 4) { Text(session.displayName).font(.subheadline.weight(.semibold)); Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)) }
-                                Text(status).font(.caption2).foregroundStyle(canSend ? AppTheme.accent : AppTheme.secondary)
+                                Text(status).font(.caption2).foregroundStyle(canSend ? theme.accent : theme.secondary)
                             }
-                        }.foregroundStyle(AppTheme.text)
+                        }.foregroundStyle(theme.text)
                     }.disabled(sending || picking).accessibilityLabel("\(session.displayName)，\(status)，切换会话")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -202,14 +203,14 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     Text(session.projectName + (session.sessionName.map { " · " + $0 } ?? ""))
-                        .font(.caption).foregroundStyle(AppTheme.secondary).padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(AppTheme.surface.opacity(0.7), in: Capsule()).frame(maxWidth: .infinity).padding(.vertical, 14)
+                        .font(.caption).foregroundStyle(theme.secondary).padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(theme.surface.opacity(0.7), in: Capsule()).frame(maxWidth: .infinity).padding(.vertical, 14)
                     if let error = connectionError ?? snapshot?.error {
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: "wifi.exclamationmark")
                             Text(error).font(.caption).textSelection(.enabled)
                             Spacer(minLength: 0)
-                        }.foregroundStyle(AppTheme.warning).padding(12).appPanel()
+                        }.foregroundStyle(theme.warning).padding(12).appPanel()
                     }
                     if snapshot != nil && messages.isEmpty && snapshot?.interaction == nil {
                         VStack(spacing: 18) {
@@ -222,7 +223,7 @@ struct ChatView: View {
                     }
                     ForEach(messages) { message in MessageCard(message: message, agent: session.displayName, command: session.command).id(message.id) }
                     if snapshot?.busy == true {
-                        HStack(spacing: 9) { ProgressView().controlSize(.small); Text("\(session.displayName) 正在工作…").font(.caption).foregroundStyle(AppTheme.secondary) }.padding(12)
+                        HStack(spacing: 9) { ProgressView().controlSize(.small); Text("\(session.displayName) 正在工作…").font(.caption).foregroundStyle(theme.secondary) }.padding(12)
                     }
                     if !nativeOnly, let menu = snapshot?.interaction {
                         AgentMenuCard(menu: menu, disabled: sending) { action, choice, control, text in
@@ -242,7 +243,7 @@ struct ChatView: View {
                     if !nearBottom {
                         Button { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
                             Image(systemName: "arrow.down").font(.body.weight(.semibold)).frame(width: 44, height: 44)
-                                .background(AppTheme.surface, in: Circle()).overlay(Circle().stroke(AppTheme.line, lineWidth: 0.5))
+                                .background(theme.surface, in: Circle()).overlay(Circle().stroke(theme.line, lineWidth: 0.5))
                         }.padding(14).accessibilityLabel("回到最新消息")
                     }
                 }
@@ -255,14 +256,14 @@ struct ChatView: View {
                 PendingAttachmentsStrip(files: files, disabled: sending) { id in files.removeAll { $0.id == id }; saveDraft() }
             }
             if !canSend, snapshot != nil {
-                Button { info = true } label: { Label(status, systemImage: snapshot?.interaction == nil ? "info.circle" : "hand.tap").font(.caption).foregroundStyle(AppTheme.secondary).frame(maxWidth: .infinity, alignment: .leading) }
+                Button { info = true } label: { Label(status, systemImage: snapshot?.interaction == nil ? "info.circle" : "hand.tap").font(.caption).foregroundStyle(theme.secondary).frame(maxWidth: .infinity, alignment: .leading) }
                     .padding(.horizontal, 18).padding(.top, 9).accessibilityHint("查看输入状态说明")
             }
             HStack(alignment: .bottom, spacing: 7) {
                 Menu {
                     Button { photoPicker = true } label: { Label("照片图库", systemImage: "photo.on.rectangle") }
                     Button { importing = true } label: { Label("文件", systemImage: "doc") }
-                } label: { Image(systemName: "paperclip").font(.system(size: 22)).frame(width: 44, height: 46).foregroundStyle(AppTheme.secondary) }
+                } label: { Image(systemName: "paperclip").font(.system(size: 22)).frame(width: 44, height: 46).foregroundStyle(theme.secondary) }
                     .disabled(sending || picking || files.count >= 6).accessibilityLabel("添加照片或文件")
                 HStack(alignment: .bottom, spacing: 4) {
                     TextField(files.isEmpty ? "消息" : "添加说明", text: $draft, axis: .vertical)
@@ -272,42 +273,42 @@ struct ChatView: View {
                             if draft.isEmpty { draft = "/"; composing = true }
                             else if draft == "/" { draft = "" }
                             else { commands = true }
-                        } label: { Image(systemName: "command").font(.system(size: 18)).frame(width: 42, height: 46).foregroundStyle(AppTheme.secondary) }
+                        } label: { Image(systemName: "command").font(.system(size: 18)).frame(width: 42, height: 46).foregroundStyle(theme.secondary) }
                             .accessibilityLabel("Agent 命令")
                     }
-                }.background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 24))
-                    .overlay(RoundedRectangle(cornerRadius: 24).stroke(AppTheme.line.opacity(0.5), lineWidth: 0.5))
+                }.appGlass(radius: 24)
+                    .overlay(RoundedRectangle(cornerRadius: 24).stroke(theme.line.opacity(0.5), lineWidth: 0.5))
                 Button { send() } label: {
                     Group {
-                        if sending || picking { ProgressView().tint(AppTheme.background) }
+                        if sending || picking { ProgressView().tint(theme.background) }
                         else { Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold)) }
                     }.frame(width: 46, height: 46)
-                        .foregroundStyle(AppTheme.background).background(AppTheme.accent, in: Circle())
+                        .foregroundStyle(theme.background).background(theme.accent, in: Circle())
                 }.accessibilityLabel(sending ? "正在发送" : "发送消息")
                     .disabled((draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty) || sending || picking || !canSend)
                     .opacity((draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty) || !canSend ? 0.4 : 1)
             }.padding(.horizontal, 8).padding(.vertical, 9)
-        }.background(.ultraThinMaterial)
+        }.appGlass(radius: 24)
     }
     private var commandCompletions: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(matchingCommands) { command in commandRow(command) }
             }
-        }.frame(maxHeight: 230).background(AppTheme.surface)
-            .overlay(alignment: .top) { Rectangle().fill(AppTheme.line).frame(height: 0.5) }
+        }.frame(maxHeight: 230).background(theme.surface)
+            .overlay(alignment: .top) { Rectangle().fill(theme.line).frame(height: 0.5) }
     }
     private func commandRow(_ command: SlashCommand) -> some View {
         Button { draft = "/" + command.name + " "; composing = true; commands = false } label: {
             HStack(spacing: 13) {
-                Text("/").font(.title3.monospaced().weight(.semibold)).foregroundStyle(AppTheme.accent)
-                    .frame(width: 36, height: 36).background(AppTheme.accent.opacity(0.1), in: Circle())
+                Text("/").font(.title3.monospaced().weight(.semibold)).foregroundStyle(theme.accent)
+                    .frame(width: 36, height: 36).background(theme.accent.opacity(0.1), in: Circle())
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("/" + command.name).font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.text)
-                    Text(command.description).font(.caption).foregroundStyle(AppTheme.secondary).lineLimit(2)
+                    Text("/" + command.name).font(.subheadline.weight(.semibold)).foregroundStyle(theme.text)
+                    Text(command.description).font(.caption).foregroundStyle(theme.secondary).lineLimit(2)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "arrow.up.left").font(.caption).foregroundStyle(AppTheme.secondary)
+                Image(systemName: "arrow.up.left").font(.caption).foregroundStyle(theme.secondary)
             }.padding(.horizontal, 17).padding(.vertical, 11).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
         }.buttonStyle(.plain).disabled(sending)
     }
@@ -318,7 +319,7 @@ struct ChatView: View {
                     Section {
                         Button { self.selectedModel = nil } label: { Label("重新选择模型", systemImage: "chevron.left") }
                         Text(selectedModel.name.isEmpty ? selectedModel.id : selectedModel.name).font(.headline)
-                    }.listRowBackground(AppTheme.surface)
+                    }.listRowBackground(theme.surface)
                     ForEach(selectedModel.reasoningEfforts ?? []) { effort in
                         Button {
                             models = false; self.selectedModel = nil
@@ -326,10 +327,10 @@ struct ChatView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(effort.id).font(.body.weight(.semibold))
-                                Text(effort.name).font(.caption).foregroundStyle(AppTheme.secondary)
-                                if effort.id == selectedModel.defaultEffort { Text("Agent 默认值").font(.caption2).foregroundStyle(AppTheme.accent) }
+                                Text(effort.name).font(.caption).foregroundStyle(theme.secondary)
+                                if effort.id == selectedModel.defaultEffort { Text("Agent 默认值").font(.caption2).foregroundStyle(theme.accent) }
                             }.padding(.vertical, 6)
-                        }.listRowBackground(AppTheme.surface).disabled(sending)
+                        }.listRowBackground(theme.surface).disabled(sending)
                     }
                 } else {
                     ForEach((snapshot?.models ?? []).filter { modelSearch.isEmpty || ($0.name + " " + $0.id + " " + $0.provider).localizedCaseInsensitiveContains(modelSearch) }, id: \.key) { model in
@@ -341,13 +342,13 @@ struct ChatView: View {
                             }
                         } label: {
                             HStack(spacing: 12) {
-                                Image(systemName: snapshot?.model == model.id ? "checkmark.circle.fill" : "circle").foregroundStyle(AppTheme.accent)
+                                Image(systemName: snapshot?.model == model.id ? "checkmark.circle.fill" : "circle").foregroundStyle(theme.accent)
                                 VStack(alignment: .leading, spacing: 5) {
-                                    Text(model.name.isEmpty ? model.id : model.name).foregroundStyle(AppTheme.text)
-                                    Text(model.id).font(.caption).foregroundStyle(AppTheme.secondary)
+                                    Text(model.name.isEmpty ? model.id : model.name).foregroundStyle(theme.text)
+                                    Text(model.id).font(.caption).foregroundStyle(theme.secondary)
                                 }
                             }.padding(.vertical, 5)
-                        }.listRowBackground(AppTheme.surface).disabled(sending || snapshot?.busy == true)
+                        }.listRowBackground(theme.surface).disabled(sending || snapshot?.busy == true)
                     }
                 }
             }.appList().searchable(text: $modelSearch, prompt: "搜索模型")
@@ -362,27 +363,27 @@ struct ChatView: View {
                 LazyVStack(spacing: 0) {
                     ForEach(availableCommands.filter { commandSearch.isEmpty || ($0.name + " " + $0.description).localizedCaseInsensitiveContains(commandSearch) }) { command in commandRow(command) }
                 }
-            }.background(AppTheme.background).searchable(text: $commandSearch, prompt: "搜索命令")
+            }.background(AppBackdrop()).searchable(text: $commandSearch, prompt: "搜索命令")
                 .navigationTitle("Agent 命令").navigationBarTitleDisplayMode(.inline).toolbar { Button("完成") { commands = false } }
         }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
     }
     private var conversationPanel: some View {
         NavigationStack {
             List {
-                Section { Text("选择要显示的历史记录。发送消息仍操作当前 Agent，不会切换或重建进程。").font(.caption).foregroundStyle(AppTheme.secondary) }.listRowBackground(Color.clear)
+                Section { Text("选择要显示的历史记录。发送消息仍操作当前 Agent，不会切换或重建进程。").font(.caption).foregroundStyle(theme.secondary) }.listRowBackground(Color.clear)
                 ForEach(snapshot?.conversations ?? []) { conversation in
                     Button {
                         conversations = false
                         Task { await apply(ChatAction(action: "select_conversation", conversationID: conversation.id)) }
                     } label: {
                         HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: snapshot?.conversationID == conversation.id ? "checkmark.circle.fill" : "bubble.left").foregroundStyle(AppTheme.accent)
+                            Image(systemName: snapshot?.conversationID == conversation.id ? "checkmark.circle.fill" : "bubble.left").foregroundStyle(theme.accent)
                             VStack(alignment: .leading, spacing: 6) {
-                                (Text(conversation.date, style: .date) + Text(" · ") + Text(conversation.date, style: .time)).font(.subheadline).foregroundStyle(AppTheme.text)
-                                Text(conversation.title).font(.caption).foregroundStyle(AppTheme.secondary).lineLimit(2)
+                                (Text(conversation.date, style: .date) + Text(" · ") + Text(conversation.date, style: .time)).font(.subheadline).foregroundStyle(theme.text)
+                                Text(conversation.title).font(.caption).foregroundStyle(theme.secondary).lineLimit(2)
                             }
                         }.padding(.vertical, 5)
-                    }.listRowBackground(AppTheme.surface).disabled(sending)
+                    }.listRowBackground(theme.surface).disabled(sending)
                 }
             }.appList().navigationTitle("对话记录").navigationBarTitleDisplayMode(.inline).toolbar { Button("完成") { conversations = false } }
         }.presentationDragIndicator(.visible)
@@ -396,9 +397,9 @@ struct ChatView: View {
                 } label: {
                     HStack(spacing: 0) {
                         SessionRow(session: next)
-                        if next.key == session.key { Image(systemName: "checkmark").foregroundStyle(AppTheme.accent).padding(.trailing) }
+                        if next.key == session.key { Image(systemName: "checkmark").foregroundStyle(theme.accent).padding(.trailing) }
                     }
-                }.listRowInsets(EdgeInsets()).listRowBackground(AppTheme.surface).disabled(sending || picking)
+                }.listRowInsets(EdgeInsets()).listRowBackground(theme.surface).disabled(sending || picking)
             }.appList().navigationTitle("切换对话").navigationBarTitleDisplayMode(.inline).toolbar { Button("完成") { sessionPicker = false } }
         }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
     }
@@ -413,9 +414,9 @@ struct ChatView: View {
                     if let name = session.sessionName { LabeledContent("tmux 会话", value: name) }
                     if let name = session.windowName { LabeledContent("窗口", value: name) }
                     Text(session.directory).font(.subheadline.monospaced()).textSelection(.enabled)
-                    if let notice = snapshot?.notice { Text(notice).font(.subheadline).foregroundStyle(AppTheme.secondary) }
-                }.listRowBackground(AppTheme.surface)
-                Section { Label("通过 SSH 加密连接到 Mac", systemImage: "lock.shield").font(.caption).foregroundStyle(AppTheme.secondary) }.listRowBackground(Color.clear)
+                    if let notice = snapshot?.notice { Text(notice).font(.subheadline).foregroundStyle(theme.secondary) }
+                }.listRowBackground(theme.surface)
+                Section { Label("通过 SSH 加密连接到 Mac", systemImage: "lock.shield").font(.caption).foregroundStyle(theme.secondary) }.listRowBackground(Color.clear)
             }.appList().navigationTitle("会话详情").navigationBarTitleDisplayMode(.inline).toolbar { Button("完成") { info = false } }
         }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
     }

@@ -31,18 +31,20 @@ struct PendingAttachment: Identifiable {
 func attachmentError(_ text: String) -> NSError { NSError(domain: "AgentMux", code: 1, userInfo: [NSLocalizedDescriptionKey: text]) }
 
 struct AttachmentThumbnail: View {
+    @Environment(\.appTheme) private var theme
     let url: URL
     var body: some View {
         Group {
             if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 480, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) {
                 Image(uiImage: UIImage(cgImage: image)).resizable().scaledToFill()
-            } else { Image(systemName: "photo").font(.title).foregroundStyle(AppTheme.secondary) }
+            } else { Image(systemName: "photo").font(.title).foregroundStyle(theme.secondary) }
         }.accessibilityHidden(true)
     }
 }
 
 struct PendingAttachmentsStrip: View {
+    @Environment(\.appTheme) private var theme
     let files: [PendingAttachment]
     let disabled: Bool
     let remove: (String) -> Void
@@ -52,14 +54,14 @@ struct PendingAttachmentsStrip: View {
                 ForEach(files) { file in
                     HStack(spacing: 9) {
                         if file.isImage { AttachmentThumbnail(url: file.url).frame(width: 50, height: 50).clipped().clipShape(RoundedRectangle(cornerRadius: 8)) }
-                        else { Image(systemName: "doc.fill").font(.title3).foregroundStyle(AppTheme.accent).frame(width: 36) }
+                        else { Image(systemName: "doc.fill").font(.title3).foregroundStyle(theme.accent).frame(width: 36) }
                         VStack(alignment: .leading, spacing: 4) {
                             Text(file.name).font(.caption.weight(.semibold)).lineLimit(1)
-                            Text(ByteCountFormatter.string(fromByteCount: Int64(file.size), countStyle: .file)).font(.caption2).foregroundStyle(AppTheme.secondary)
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(file.size), countStyle: .file)).font(.caption2).foregroundStyle(theme.secondary)
                         }.frame(maxWidth: 140, alignment: .leading)
-                        Button { remove(file.id) } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(AppTheme.secondary) }
+                        Button { remove(file.id) } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(theme.secondary) }
                             .frame(width: 44, height: 44).disabled(disabled).accessibilityLabel("移除附件 \(file.name)")
-                    }.padding(8).background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                    }.padding(8).background(theme.surface, in: RoundedRectangle(cornerRadius: 12))
                 }
             }.padding(.horizontal, 12).padding(.top, 10)
         }
@@ -67,6 +69,7 @@ struct PendingAttachmentsStrip: View {
 }
 
 struct RemoteAttachmentCard: View {
+    @Environment(\.appTheme) private var theme
     @EnvironmentObject var client: Client
     let file: RemoteAttachment
     @State private var local: URL?
@@ -79,23 +82,23 @@ struct RemoteAttachmentCard: View {
                     .accessibilityLabel("预览图片 \(file.name)")
             }
             HStack(spacing: 10) {
-                Image(systemName: file.isImage ? "photo" : "doc.fill").font(.title3).foregroundStyle(AppTheme.accent)
+                Image(systemName: file.isImage ? "photo" : "doc.fill").font(.title3).foregroundStyle(theme.accent)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(file.name).font(.subheadline.weight(.medium)).lineLimit(2)
-                    Text(ByteCountFormatter.string(fromByteCount: Int64(file.size), countStyle: .file)).font(.caption).foregroundStyle(AppTheme.secondary)
+                    Text(ByteCountFormatter.string(fromByteCount: Int64(file.size), countStyle: .file)).font(.caption).foregroundStyle(theme.secondary)
                 }
                 Spacer(minLength: 8)
                 if loading { ProgressView() }
                 else if let local { ShareLink(item: local) { Image(systemName: "square.and.arrow.up") }.frame(minWidth: 44, minHeight: 44).accessibilityLabel("保存或分享附件") }
                 else { Button { Task { await fetch(showError: true) } } label: { Image(systemName: "arrow.down.circle") }.frame(minWidth: 44, minHeight: 44).accessibilityLabel("下载附件") }
             }
-        }.padding(10).background(AppTheme.background.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+        }.padding(10).background(theme.background.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
             .task(id: file.id) { if file.isImage { await fetch() } }
             .sheet(isPresented: $preview) {
                 NavigationStack {
                     Group {
                         if let local, let image = UIImage(contentsOfFile: local.path) { Image(uiImage: image).resizable().scaledToFit() }
-                    }.frame(maxWidth: .infinity, maxHeight: .infinity).background(AppTheme.background)
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity).background(AppBackdrop())
                         .navigationTitle(file.name).navigationBarTitleDisplayMode(.inline)
                         .toolbar { Button("关闭") { preview = false } }
                 }

@@ -17,8 +17,11 @@ use tokio_stream::wrappers::ReceiverStream;
 #[derive(Default)]
 pub struct Manager {
     leases: Mutex<HashMap<String, Arc<Lease>>>,
+    sizes: Mutex<HashMap<String, SizeLease>>,
+    journal: Option<PathBuf>,
 }
 struct Lease {
+    generation: String,
     pane: String,
     owner: String,
     identity: Identity,
@@ -28,6 +31,8 @@ struct Lease {
     cancelled: AtomicBool,
     writes: Mutex<WriteState>,
     agent: Option<(u32, String)>,
+    resize_tx: mpsc::Sender<ResizeRequest>,
+    resize_rx: Mutex<Option<mpsc::Receiver<ResizeRequest>>>,
 }
 #[derive(Default)]
 struct WriteState {
@@ -214,6 +219,17 @@ pub async fn open(
         None => None,
     };
     let mut leases = app.terminal.leases.lock().await;
+    // Restore even already-cancelled generations before pruning them. A close
+    // request and immediate navigation can arrive on different SSH channels.
+    for old in leases
+        .values()
+        .filter(|lease| lease.owner == owner(&headers))
+    {
+        old.cancelled.store(true, Ordering::SeqCst);
+        old.active.store(false, Ordering::SeqCst);
+        let _writes = old.writes.lock().await;
+        release_size(&app, old).await;
+    }
     leases.retain(|_, lease| {
         !lease.cancelled.load(Ordering::SeqCst)
             && (lease.active.load(Ordering::SeqCst)
@@ -225,17 +241,12 @@ pub async fn open(
             "Too many terminal attachments".into(),
         ));
     }
-    for old in leases
-        .values()
-        .filter(|lease| lease.owner == owner(&headers))
-    {
-        old.cancelled.store(true, Ordering::SeqCst);
-        old.active.store(false, Ordering::SeqCst);
-    }
     let id = uuid::Uuid::new_v4().to_string();
+    let (resize_tx, resize_rx) = mpsc::channel(1);
     leases.insert(
         id.clone(),
         Arc::new(Lease {
+            generation: id.clone(),
             pane: request_pane(&current),
             owner: owner(&headers),
             identity: current.identity.clone(),
@@ -245,10 +256,12 @@ pub async fn open(
             cancelled: AtomicBool::new(false),
             agent,
             writes: Mutex::new(WriteState::default()),
+            resize_tx,
+            resize_rx: Mutex::new(Some(resize_rx)),
         }),
     );
     Ok(Json(
-        json!({"generation":id,"cols":current.width,"rows":current.height,"command":current.identity.command,"capabilities":{"key":true,"paste":true,"multiline_paste":current.paste}}),
+        json!({"generation":id,"cols":current.width,"rows":current.height,"command":current.identity.command,"capabilities":{"key":true,"paste":true,"multiline_paste":current.paste,"resize":true}}),
     ))
 }
 fn request_pane(pane: &Pane) -> String {
@@ -291,6 +304,7 @@ pub async fn close(
     let lease = lease(&app, &headers, &id).await?;
     lease.cancelled.store(true, Ordering::SeqCst);
     lease.active.store(false, Ordering::SeqCst);
+    release_size(&app, &lease).await;
     Ok(StatusCode::NO_CONTENT)
 }
 struct Invalidate(Arc<Lease>);
@@ -407,6 +421,262 @@ fn frame(value: Value) -> std::result::Result<Bytes, std::io::Error> {
     Ok(Bytes::from(format!("{value}\n")))
 }
 
+struct ResizeRequest {
+    enabled: bool,
+    cols: usize,
+    rows: usize,
+    reply: tokio::sync::oneshot::Sender<Result<()>>,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct WindowSize {
+    id: String,
+    cols: usize,
+    rows: usize,
+    layout: String,
+    policy: Option<String>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct SizeLease {
+    generation: String,
+    server: String,
+    pane: String,
+    pane_identity: String,
+    owner: String,
+    original: WindowSize,
+    applied: WindowSize,
+}
+impl Manager {
+    pub fn with_journal(state: &FsPath) -> Self {
+        Self {
+            journal: Some(state.join("terminal-sizes.json")),
+            ..Self::default()
+        }
+    }
+}
+async fn window_size(app: &App, target: &str) -> Result<WindowSize> {
+    let value = tmux(app, &["display-message", "-p", "-t", target,
+        "#{window_id}\t#{window_width}\t#{window_height}\t#{window_layout}\t#{window_zoomed_flag}"]).await?;
+    let fields: Vec<_> = value.trim().split('\t').collect();
+    if fields.len() != 5 || !fields[0].starts_with('@') || fields[4] != "0" {
+        return Err(conflict("请先在 Mac 退出窗格放大模式，再开启尺寸跟随"));
+    }
+    let policy = tmux(
+        app,
+        &["show-options", "-w", "-v", "-t", fields[0], "window-size"],
+    )
+    .await?;
+    Ok(WindowSize {
+        id: fields[0].into(),
+        cols: fields[1].parse().map_err(bad)?,
+        rows: fields[2].parse().map_err(bad)?,
+        layout: fields[3].into(),
+        policy: if policy.trim().is_empty() {
+            None
+        } else {
+            Some(policy.trim().into())
+        },
+    })
+}
+async fn save_sizes(app: &App, sizes: &HashMap<String, SizeLease>) -> Result<()> {
+    if let Some(path) = &app.terminal.journal {
+        let temp = path.with_extension("tmp");
+        tokio::fs::write(&temp, serde_json::to_vec(sizes).map_err(internal)?)
+            .await
+            .map_err(internal)?;
+        tokio::fs::rename(temp, path).await.map_err(internal)?;
+    }
+    Ok(())
+}
+async fn restore_size(app: &App, saved: &SizeLease) -> Result<()> {
+    let current = pane(app, &saved.pane).await?;
+    if current.identity.server != saved.server || current.identity.pane != saved.pane_identity {
+        return Ok(());
+    }
+    // Never overwrite a layout/size policy edited on the Mac since our last change.
+    if window_size(app, &saved.pane).await? != saved.applied {
+        return Ok(());
+    }
+    let original = &saved.original;
+    tmux(
+        app,
+        &[
+            "resize-window",
+            "-t",
+            &original.id,
+            "-x",
+            &original.cols.to_string(),
+            "-y",
+            &original.rows.to_string(),
+        ],
+    )
+    .await?;
+    tmux(
+        app,
+        &["select-layout", "-t", &original.id, &original.layout],
+    )
+    .await?;
+    if let Some(policy) = &original.policy {
+        tmux(
+            app,
+            &[
+                "set-option",
+                "-w",
+                "-t",
+                &original.id,
+                "window-size",
+                policy,
+            ],
+        )
+        .await?;
+    } else {
+        tmux(
+            app,
+            &["set-option", "-w", "-u", "-t", &original.id, "window-size"],
+        )
+        .await?;
+    }
+    Ok(())
+}
+pub async fn recover_sizes(app: &App) {
+    let Some(path) = &app.terminal.journal else {
+        return;
+    };
+    let Ok(data) = tokio::fs::read(path).await else {
+        return;
+    };
+    let Ok(mut sizes) = serde_json::from_slice::<HashMap<String, SizeLease>>(&data) else {
+        return;
+    };
+    let mut failed = HashMap::new();
+    for (key, saved) in sizes.drain() {
+        if restore_size(app, &saved).await.is_err() {
+            failed.insert(key, saved);
+        }
+    }
+    let _ = save_sizes(app, &failed).await;
+    *app.terminal.sizes.lock().await = failed;
+}
+async fn release_size(app: &App, lease: &Lease) {
+    let mut sizes = app.terminal.sizes.lock().await;
+    let keys: Vec<_> = sizes
+        .iter()
+        .filter(|(_, saved)| saved.generation == lease.generation)
+        .map(|(key, _)| key.clone())
+        .collect();
+    for key in keys {
+        if let Some(saved) = sizes.get(&key)
+            && restore_size(app, saved).await.is_ok()
+        {
+            sizes.remove(&key);
+        }
+    }
+    let _ = save_sizes(app, &sizes).await;
+}
+async fn size_was_changed_externally(app: &App, lease: &Lease) -> bool {
+    let mut sizes = app.terminal.sizes.lock().await;
+    let key = sizes
+        .iter()
+        .find(|(_, saved)| saved.generation == lease.generation)
+        .map(|(key, _)| key.clone());
+    if let Some(key) = key {
+        let changed = window_size(app, &lease.pane)
+            .await
+            .map_or(true, |current| current != sizes[&key].applied);
+        if changed {
+            sizes.remove(&key);
+            let _ = save_sizes(app, &sizes).await;
+            return true;
+        }
+    }
+    false
+}
+async fn resize_window(
+    app: &App,
+    lease: &Lease,
+    enabled: bool,
+    cols: usize,
+    rows: usize,
+) -> Result<()> {
+    if !enabled {
+        release_size(app, lease).await;
+        return Ok(());
+    }
+    let current = pane(app, &lease.pane).await?;
+    if current.identity != lease.identity || lease.cancelled.load(Ordering::SeqCst) {
+        return Err(conflict("会话已变化，请重新打开"));
+    }
+    let mut sizes = app.terminal.sizes.lock().await;
+    let before = window_size(app, &lease.pane).await?;
+    let key = format!("{}:{}", lease.identity.server, before.id);
+    if let Some(saved) = sizes.get(&key) {
+        if saved.generation != lease.generation {
+            return Err(conflict("另一个连接正在调整此窗口，当前使用固定尺寸"));
+        }
+        if saved.applied != before {
+            sizes.remove(&key);
+            save_sizes(app, &sizes).await?;
+            return Err(conflict("Mac 已调整窗口，手机已停止尺寸跟随"));
+        }
+    } else {
+        sizes.insert(
+            key.clone(),
+            SizeLease {
+                generation: lease.generation.clone(),
+                server: lease.identity.server.clone(),
+                pane: lease.pane.clone(),
+                pane_identity: lease.identity.pane.clone(),
+                owner: lease.owner.clone(),
+                original: before.clone(),
+                applied: before.clone(),
+            },
+        );
+        save_sizes(app, &sizes).await?;
+    }
+    // The phone displays one pane, not the whole window. Reserve the space
+    // occupied by its siblings before sizing the target pane to the viewport.
+    let window_cols = cols + before.cols.saturating_sub(current.width);
+    let window_rows = rows + before.rows.saturating_sub(current.height);
+    tmux(
+        app,
+        &[
+            "resize-window",
+            "-t",
+            &before.id,
+            "-x",
+            &window_cols.to_string(),
+            "-y",
+            &window_rows.to_string(),
+        ],
+    )
+    .await?;
+    // resize-window may distribute its delta across siblings. Correct the
+    // target explicitly, keeping the split tree and all other panes alive.
+    sizes.get_mut(&key).unwrap().applied = window_size(app, &lease.pane).await?;
+    save_sizes(app, &sizes).await?;
+    let resized = tmux(
+        app,
+        &[
+            "resize-pane",
+            "-t",
+            &lease.pane,
+            "-x",
+            &cols.to_string(),
+            "-y",
+            &rows.to_string(),
+        ],
+    )
+    .await;
+    sizes.get_mut(&key).unwrap().applied = window_size(app, &lease.pane).await?;
+    save_sizes(app, &sizes).await?;
+    resized?;
+    Ok(())
+}
+fn snapshot_command(pane: &str) -> String {
+    format!(
+        "display-message -p -t {pane} '#{{pane_width}} #{{pane_height}} #{{cursor_x}} #{{cursor_y}} #{{alternate_on}} #{{cursor_flag}} #{{?bracket_paste_flag,1,0}} #{{insert_flag}} #{{wrap_flag}} #{{origin_flag}} #{{keypad_flag}} #{{keypad_cursor_flag}} #{{scroll_region_upper}} #{{scroll_region_lower}}' ; capture-pane -p -e -C -N -t {pane} ; capture-pane -p -P -C -t {pane}\n"
+    )
+}
+
 pub async fn stream(
     State(app): State<Shared>,
     headers: HeaderMap,
@@ -422,6 +692,12 @@ pub async fn stream(
     if current.identity != lease.identity || !agent_matches(&lease).await {
         return Err(conflict("Target changed before attachment"));
     }
+    let mut resize_rx = lease
+        .resize_rx
+        .lock()
+        .await
+        .take()
+        .ok_or_else(|| conflict("Stream already started"))?;
     let mut child = Command::new(&app.tmux)
         .args([
             "-C",
@@ -450,12 +726,14 @@ pub async fn stream(
         let mut captured = Vec::new();
         let mut pending = Vec::new();
         let mut ready = false;
+        let mut resize_reply: Option<tokio::sync::oneshot::Sender<Result<()>>> = None;
+        let mut resize_started = Instant::now();
         let mut check = tokio::time::interval(Duration::from_millis(700));
         let mut last_ping = Instant::now();
         // Command order forms a snapshot barrier: output before capture is discarded;
         // notifications after its block are forwarded exactly once.
         if stdin
-            .write_all(format!("display-message -p -t {} '#{{pane_width}} #{{pane_height}} #{{cursor_x}} #{{cursor_y}} #{{alternate_on}} #{{cursor_flag}} #{{?bracket_paste_flag,1,0}} #{{insert_flag}} #{{wrap_flag}} #{{origin_flag}} #{{keypad_flag}} #{{keypad_cursor_flag}} #{{scroll_region_upper}} #{{scroll_region_lower}}' ; capture-pane -p -e -C -N -t {} ; capture-pane -p -P -C -t {}\n", lease.pane, lease.pane, lease.pane).as_bytes())
+            .write_all(snapshot_command(&lease.pane).as_bytes())
             .await
             .is_err()
         {
@@ -464,13 +742,37 @@ pub async fn stream(
         loop {
             let event = tokio::select! {
                 _ = sender.closed() => break,
+                request = resize_rx.recv(), if ready => {
+                    let Some(request) = request else { break; };
+                    match resize_window(&app, &lease, request.enabled, request.cols, request.rows).await {
+                        Ok(()) => {
+                            let Ok(next) = pane(&app, &lease.pane).await else { break; };
+                            if next.identity != lease.identity { break; }
+                            current = next;
+                            ready = false; block = 1; captured.clear(); pending.clear();
+                            resize_started = Instant::now();
+                            resize_reply = Some(request.reply);
+                            if stdin.write_all(snapshot_command(&lease.pane).as_bytes()).await.is_err() { break; }
+                            None
+                        }
+                        Err(error) => {
+                            let reason = error.1.clone();
+                            let _ = request.reply.send(Ok(()));
+                            Some(json!({"type":"resize_rejected","reason":reason}))
+                        }
+                    }
+                },
                 _ = check.tick() => {
                     if lease.cancelled.load(Ordering::SeqCst) || !agent_matches(&lease).await || authorize(&headers, &app).is_err() { break; }
                     match pane(&app, &lease.pane).await {
                         Ok(next) if next.identity == lease.identity && next.width == current.width && next.height == current.height => {},
                         _ => { let _ = sender.try_send(frame(json!({"type":"closed","reason":"目标进程或远端尺寸已变化，请重新打开"}))); break; }
                     }
-                    if !ready && lease.created.elapsed() > Duration::from_secs(15) { break; }
+                    if size_was_changed_externally(&app, &lease).await {
+                        let _ = sender.try_send(frame(json!({"type":"closed","reason":"Mac 已调整窗口布局，手机已停止尺寸跟随，请重新打开会话"})));
+                        break;
+                    }
+                    if !ready && (if resize_reply.is_some() { resize_started.elapsed() } else { lease.created.elapsed() }) > Duration::from_secs(15) { break; }
                     if last_ping.elapsed() > Duration::from_secs(5) { last_ping = Instant::now(); Some(json!({"type":"ping"})) } else { None }
                 },
                 count = reader.read_until(b'\n', &mut raw_line) => {
@@ -487,7 +789,9 @@ pub async fn stream(
                                 let Ok(mut data) = bootstrap(&current, &captured) else { break; };
                                 data.extend_from_slice(&pending);
                                 lease.active.store(true, Ordering::SeqCst); ready = true;
-                                Some(json!({"type":"ready","cols":current.width,"rows":current.height,"data":STANDARD.encode(data)}))
+                                let resized = resize_reply.is_some();
+                                if let Some(reply) = resize_reply.take() { let _ = reply.send(Ok(())); }
+                                Some(json!({"type":if resized { "resized" } else { "ready" },"cols":current.width,"rows":current.height,"data":STANDARD.encode(data)}))
                             } else { None }
                         } else {
                             if block == 2 {
@@ -509,6 +813,7 @@ pub async fn stream(
                 break;
             }
         }
+        release_size(&app, &lease).await;
         let _ = child.kill().await;
         let _ = child.wait().await;
     });
@@ -529,6 +834,12 @@ pub struct Input {
     text: String,
     #[serde(default)]
     confirm_multiline: bool,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    cols: usize,
+    #[serde(default)]
+    rows: usize,
 }
 fn validate_text(text: &str) -> Result<()> {
     if text.is_empty()
@@ -567,6 +878,13 @@ pub async fn input(
         return Err(conflict("Foreground process changed; reselect target"));
     }
     match request.kind.as_str() {
+        "resize" => {
+            if request.enabled
+                && (!(2..=1000).contains(&request.cols) || !(2..=1000).contains(&request.rows))
+            {
+                return Err(bad("Terminal grid must be between 2 and 1000 cells"));
+            }
+        }
         "key" => {
             key(&request.key)?;
         }
@@ -585,7 +903,23 @@ pub async fn input(
     if lease.cancelled.load(Ordering::SeqCst) || !lease.active.load(Ordering::SeqCst) {
         return Err(conflict("Connection generation ended"));
     }
-    let result = if request.kind == "key" {
+    let result = if request.kind == "resize" {
+        let (reply, receive) = tokio::sync::oneshot::channel();
+        lease
+            .resize_tx
+            .send(ResizeRequest {
+                enabled: request.enabled,
+                cols: request.cols,
+                rows: request.rows,
+                reply,
+            })
+            .await
+            .map_err(|_| conflict("Terminal stream ended"))?;
+        tokio::time::timeout(Duration::from_secs(20), receive)
+            .await
+            .map_err(|_| conflict("Resize timed out; reopen terminal"))?
+            .map_err(|_| conflict("Terminal stream ended during resize"))?
+    } else if request.kind == "key" {
         tmux(&app, &["send-keys", "-t", &lease.pane, "--", &request.key])
             .await
             .map(|_| ())

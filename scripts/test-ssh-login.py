@@ -112,7 +112,7 @@ class SSHServer(paramiko.ServerInterface):
 with tempfile.TemporaryDirectory(prefix="agentmux-ssh-login-") as temporary:
     root = Path(temporary).resolve()
     env = os.environ.copy()
-    env.pop("AGENTMUX_CONFIG", None)
+    env["AGENTMUX_CONFIG"] = str(root / "agentmux.json")
     env.pop("AGENTMUX_TOKEN", None)
     env.update(AGENTMUX_API_PORT=str(api_port), AGENTMUX_STATE=str(root / "state"), AGENTMUX_DISCOVERY=str(root / "service.json"), AGENTMUX_SSH_DISABLED="1")
     key_path = root / "id_ed25519"

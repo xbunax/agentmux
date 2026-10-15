@@ -2,7 +2,7 @@ import SwiftUI
 import Foundation
 
 struct TerminalAttachment: Decodable {
-    struct Capabilities: Decodable { let key: Bool; let paste: Bool; let multiline_paste: Bool }
+    struct Capabilities: Decodable { let key: Bool; let paste: Bool; let multiline_paste: Bool; let resize: Bool? }
     let generation: String; let cols: Int; let rows: Int; let command: String; let capabilities: Capabilities
 }
 struct TerminalFrame: Decodable { let type: String; let data: String?; let cols: Int?; let rows: Int?; let reason: String? }
@@ -13,18 +13,33 @@ struct TerminalInput: Encodable {
     var key = ""
     var text = ""
     var confirm_multiline = false
+    var enabled = false
+    var cols = 0
+    var rows = 0
 }
+
+struct TerminalGrid: Equatable { let cols: Int; let rows: Int }
 
 @MainActor final class TerminalSessionModel: ObservableObject {
     @Published var active = false
     @Published var connecting = false
     @Published var uncertain = false
-    @Published var status = "确认目标后连接"
+    @Published var status = "尚未连接 · 点击连接以继续此会话"
     @Published var attachment: TerminalAttachment?
     @Published var native: ChatSnapshot?
     @Published var writing = false
+    @Published var resizing = false
+    @Published var grid: TerminalGrid?
+    var returnToCursor: (() -> Void)?
+    private var resizeTask: Task<Void, Never>?
+    private var followSize = false
+    private var viewport: TerminalGrid?
+    private var lastRequestedGrid: TerminalGrid?
+    private var followsRemote = false
+    private var resizeBlocked = false
+    private var userInputInFlight = false
     var output: ((Data, Int?, Int?) -> Void)?
-    var browse: ((CGFloat, CGFloat) -> Void)?
+    var browse: ((CGFloat, CGFloat) -> Bool)?
     private(set) var session: AgentSession
     private weak var client: Client?
     private var channel: TerminalHTTPStream?
@@ -38,8 +53,8 @@ struct TerminalInput: Encodable {
     init(session: AgentSession) { self.session = session }
     var paneID: String? { session.mode == "plugin" ? session.nativePaneID : ["tmux", "generic"].contains(session.mode) ? session.id : nil }
     var nativeBase: String? { session.mode == "plugin" ? "/v1/plugins/\(session.id)" : nil }
-    var canSendNative: Bool { active && !uncertain && native?.alive == true && native?.capabilities?.message == true }
-    var canWrite: Bool { active && !uncertain && !connecting }
+    var canSendNative: Bool { active && !uncertain && !resizing && native?.alive == true && native?.capabilities?.message == true }
+    var canWrite: Bool { active && !uncertain && !connecting && !resizing }
     func bindOutput(_ handler: @escaping (Data, Int?, Int?) -> Void) {
         output = handler
         for (data, cols, rows) in pendingOutput { handler(data, cols, rows) }
@@ -51,10 +66,11 @@ struct TerminalInput: Encodable {
         else { stop(); status = "终端显示未就绪，请重新打开" }
     }
     func connect(_ client: Client) {
+        guard !active, !connecting else { return }
         stop(); self.client = client
-        guard let paneID, let profile = client.paired else { return }
+        guard let paneID, let profile = client.paired else { status = "请先连接 Mac，再打开会话"; return }
         let epoch = self.epoch
-        connecting = true; status = "正在连接原终端…"; uncertain = false
+        connecting = true; status = "正在连接 Mac 上的会话…"; uncertain = false
         streamTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -73,20 +89,34 @@ struct TerminalInput: Encodable {
                     guard self.epoch == epoch, !Task.isCancelled else { return }
                     let event = try JSONDecoder().decode(TerminalFrame.self, from: bytes)
                     if event.type == "closed" { throw SSHConnectionError.message(event.reason ?? "目标已变化") }
-                    if event.type == "ready" { active = true; connecting = false; status = "实时终端 · \(paneID)"; pollNative(epoch: epoch) }
+                    if event.type == "ready" {
+                        active = true; connecting = false; status = "已连接 · 与 Mac 实时同步"
+                        pollNative(epoch: epoch); scheduleResize()
+                    }
+                    if let cols = event.cols, let rows = event.rows { grid = TerminalGrid(cols: cols, rows: rows) }
+                    if event.type == "resized" { resizing = false; scheduleResize() }
+                    if event.type == "resize_rejected" {
+                        resizing = false; resizeBlocked = true
+                        status = event.reason ?? "无法调整尺寸，当前使用固定尺寸"
+                    }
                     if let encoded = event.data, let data = Data(base64Encoded: encoded) { deliver(data, cols: event.cols, rows: event.rows) }
                 }
-                if self.epoch == epoch { stop(); status = "连接已结束 · 重新确认目标后继续" }
+                if self.epoch == epoch { stop(); status = "连接已结束 · 点击连接以继续此会话" }
             } catch {
                 guard self.epoch == epoch else { return }
-                let wasWriting = writing
+                let wasWriting = userInputInFlight
                 stop(); uncertain = wasWriting
                 status = wasWriting ? "结果待确认 · 查看现场后再操作" : "连接已停止：\(error.localizedDescription)"
             }
         }
     }
     func stop() {
+        uncertain = uncertain || userInputInFlight
+        userInputInFlight = false
+        resizeTask?.cancel(); resizeTask = nil; resizing = false
+        lastRequestedGrid = nil; followsRemote = false; resizeBlocked = false
         epoch = UUID(); active = false; connecting = false
+        status = uncertain ? "输入结果待确认 · 请查看终端后重试连接" : "已断开 · 点击重试连接"
         queue.removeAll(); pendingOutput.removeAll(); sequence = 0
         streamTask?.cancel(); streamTask = nil; nativeTask?.cancel(); nativeTask = nil
         writeTask?.cancel(); writeTask = nil; writing = false; native = nil
@@ -96,33 +126,67 @@ struct TerminalInput: Encodable {
         }
         attachment = nil
     }
+    func setFollowSize(_ enabled: Bool) {
+        guard enabled != followSize else { return }
+        followSize = enabled; resizeBlocked = false; scheduleResize()
+    }
+    func setViewport(cols: Int, rows: Int) {
+        let next = TerminalGrid(cols: min(1000, max(2, cols)), rows: min(1000, max(2, rows)))
+        guard viewport != next else { return }
+        viewport = next; scheduleResize()
+    }
+    private func scheduleResize() {
+        resizeTask?.cancel()
+        guard active, !uncertain, !resizeBlocked else { return }
+        guard attachment?.capabilities.resize == true else {
+            if followSize { status = "当前服务不支持尺寸跟随，请更新 Mac 上的 agentmuxd" }
+            return
+        }
+        guard !resizing, !writing, let viewport else { return }
+        guard followSize ? (!followsRemote || lastRequestedGrid != viewport) : followsRemote else { return }
+        let epoch = self.epoch
+        resizeTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            guard let self, self.epoch == epoch, active, !uncertain, !writing, !resizing else { return }
+            resizing = true; followsRemote = followSize; lastRequestedGrid = viewport
+            queue.append(TerminalInput(kind: "resize", enabled: followSize, cols: viewport.cols, rows: viewport.rows))
+            drain()
+        }
+    }
     func cancelNavigation() { queue.removeAll { $0.kind == "key" && ["Up", "Down", "Left", "Right"].contains($0.key) } }
-    func key(_ key: String) { enqueue(TerminalInput(kind: "key", key: key)) }
+    @discardableResult func key(_ key: String) -> Bool { enqueue(TerminalInput(kind: "key", key: key)) }
     func committed(_ text: String) {
         if text == "\n" { key("Enter") }
         else if text == "\t" { key("Tab") }
         else { enqueue(TerminalInput(kind: "text", text: text)) }
     }
-    func paste(_ text: String, confirmed: Bool = false) { enqueue(TerminalInput(kind: "paste", text: text, confirm_multiline: confirmed)) }
-    private func enqueue(_ input: TerminalInput) {
-        guard canWrite else { return }
-        guard queue.count < 12 else { stop(); uncertain = true; status = "输入队列已满，已停止；请检查现场"; return }
-        queue.append(input); drain()
+    @discardableResult func paste(_ text: String, confirmed: Bool = false) -> Bool {
+        enqueue(TerminalInput(kind: "paste", text: text, confirm_multiline: confirmed))
+    }
+    @discardableResult private func enqueue(_ input: TerminalInput) -> Bool {
+        guard canWrite else { return false }
+        guard queue.count < 12 else { stop(); uncertain = true; status = "输入队列已满，已停止；请检查现场"; return false }
+        queue.append(input); drain(); return true
     }
     private func drain() {
-        guard writeTask == nil, canWrite, let client, let generation = attachment?.generation else { return }
+        guard writeTask == nil, active, !uncertain, let client, let generation = attachment?.generation else { return }
         let epoch = self.epoch
         writeTask = Task { [weak self] in
             guard let self else { return }
             writing = true
-            defer { if self.epoch == epoch { writing = false; writeTask = nil } }
+            defer { if self.epoch == epoch { writing = false; writeTask = nil; userInputInFlight = false; scheduleResize() } }
             while !queue.isEmpty && self.epoch == epoch && !Task.isCancelled {
                 var input = queue.removeFirst(); sequence += 1; input.sequence = sequence
+                userInputInFlight = input.kind != "resize"
                 do { try await client.send("/v1/terminal/streams/\(generation)/input", value: input) }
                 catch {
                     guard self.epoch == epoch else { return }
-                    stop(); uncertain = true; status = "结果待确认：\(error.localizedDescription)"; return
+                    let isInput = userInputInFlight
+                    stop(); uncertain = isInput
+                    status = isInput ? "结果待确认：\(error.localizedDescription)" : "尺寸调整失败，请重试连接：\(error.localizedDescription)"
+                    return
                 }
+                userInputInFlight = false
             }
         }
     }
@@ -144,10 +208,10 @@ struct TerminalInput: Encodable {
     func nativeSend(_ text: String) {
         guard canSendNative, !writing, writeTask == nil, let client, let base = nativeBase else { return }
         let epoch = self.epoch
-        writing = true
+        writing = true; userInputInFlight = true
         writeTask = Task { [weak self] in
             guard let self else { return }
-            defer { if self.epoch == epoch { writing = false; writeTask = nil; drain() } }
+            defer { if self.epoch == epoch { writing = false; writeTask = nil; userInputInFlight = false; drain(); scheduleResize() } }
             do {
                 try await client.send(base + "/actions", value: ChatAction(action: "message", text: text, requestID: UUID().uuidString, agentPID: session.agentPID))
                 guard self.epoch == epoch else { return }

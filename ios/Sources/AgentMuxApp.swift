@@ -130,13 +130,16 @@ enum WorkspaceTab: String, CaseIterable, Identifiable {
 }
 
 @main struct AgentMuxApp: App {
+    @AppStorage("colorPalette") private var palette = ColorPalette.agentmux.rawValue
+    private var theme: AppTheme { AppTheme(palette: ColorPalette(rawValue: palette) ?? .agentmux) }
     @StateObject var client = Client()
     @AppStorage("appearance") private var appearance = "dark"
     var body: some Scene {
         WindowGroup {
             root
                 .environmentObject(client)
-                .tint(AppTheme.accent)
+                .environment(\.appTheme, theme)
+                .tint(theme.accent)
                 .preferredColorScheme(appearance == "system" ? nil : appearance == "light" ? .light : .dark)
                 .alert("操作未完成", isPresented: Binding(get: { client.error != nil }, set: { if !$0 { client.error = nil } })) {
                     Button("知道了") { client.error = nil }
@@ -153,6 +156,7 @@ enum WorkspaceTab: String, CaseIterable, Identifiable {
 }
 
 struct WorkspaceRoot: View {
+    @Environment(\.appTheme) private var theme
     @EnvironmentObject var client: Client
     @Environment(\.horizontalSizeClass) var sizeClass
     @State private var tab: WorkspaceTab = .sessions
@@ -166,7 +170,7 @@ struct WorkspaceRoot: View {
                     }.appList().navigationTitle("AgentMux")
                         .safeAreaInset(edge: .bottom) {
                             Label(client.paired?.host ?? "尚未连接 Mac", systemImage: "desktopcomputer")
-                                .font(.caption).foregroundStyle(AppTheme.secondary).padding()
+                                .font(.caption).foregroundStyle(theme.secondary).padding()
                         }
                 } detail: { destination(tab) }
             } else {
@@ -176,7 +180,7 @@ struct WorkspaceRoot: View {
                     }
                 }
             }
-        }.tint(AppTheme.accent)
+        }.tint(theme.accent)
     }
     @ViewBuilder private func destination(_ tab: WorkspaceTab) -> some View {
         switch tab {

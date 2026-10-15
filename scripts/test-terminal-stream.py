@@ -2,6 +2,7 @@
 """Exercise the real tmux stream on an isolated server. No agents/model calls."""
 import base64
 import json
+import hashlib
 import os
 import queue
 import secrets
@@ -55,6 +56,9 @@ while True:
     config = root / 'config.json'
     config.write_text(json.dumps({'revision':0,'roots':[str(root)],'default_directory':str(root),'agents':dict.fromkeys(['codex','claude','pi'],'not-installed-agent')}))
     token = secrets.token_hex(32)
+    second_token = secrets.token_hex(32)
+    (root/'state').mkdir()
+    (root/'state/devices.json').write_text(json.dumps([{'id':'test-second-phone','name':'Isolated second phone','hash':hashlib.sha256(second_token.encode()).hexdigest(),'created':int(time.time())}]))
     env = dict(os.environ, AGENTMUX_CONFIG=str(config), AGENTMUX_TMUX=str(wrapper), AGENTMUX_TOKEN=token, AGENTMUX_API_PORT=str(port), AGENTMUX_STATE=str(root/'state'), AGENTMUX_DISCOVERY=str(root/'service.json'), AGENTMUX_SSH_DISABLED='1')
     log = (root / 'service.log').open('w+')
     service = subprocess.Popen([str(repo/'target/debug/agentmuxd')], env=env, stdout=log, stderr=log)
@@ -66,13 +70,13 @@ while True:
         try:
             with urllib.request.urlopen(request, timeout=10) as response: return response.status, response.read()
         except urllib.error.HTTPError as error: return error.code, error.read()
-    def open_target():
-        status, data = req('/v1/terminal/panes/'+urllib.parse.quote(pane,safe='')+'/open','POST',{'generic':True})
+    def open_target(auth=token, target_pane=None):
+        status, data = req('/v1/terminal/panes/'+urllib.parse.quote(target_pane or pane,safe='')+'/open','POST',{'generic':True},auth)
         assert status == 200, (status,data)
         return json.loads(data)
-    def stream(target):
+    def stream(target, auth=token):
         generation = target['generation']
-        response = urllib.request.urlopen(urllib.request.Request(f'http://127.0.0.1:{port}/v1/terminal/streams/{generation}',headers={'Authorization':'Bearer '+token}),timeout=10)
+        response = urllib.request.urlopen(urllib.request.Request(f'http://127.0.0.1:{port}/v1/terminal/streams/{generation}',headers={'Authorization':'Bearer '+auth}),timeout=10)
         responses.append(response)
         events = queue.Queue()
         def read():
@@ -86,8 +90,8 @@ while True:
             if first['type'] == 'ping': continue
             assert first['type']=='ready', first
             return response, events, first
-    def write(target, sequence, **kwargs):
-        return req('/v1/terminal/streams/'+target['generation']+'/input','POST',dict(sequence=sequence,request_id=str(uuid.uuid4()),**kwargs))
+    def write(target, sequence, auth=token, **kwargs):
+        return req('/v1/terminal/streams/'+target['generation']+'/input','POST',dict(sequence=sequence,request_id=str(uuid.uuid4()),**kwargs),auth)
     try:
         def started():
             try: return req('/v1/settings')[0]==200
@@ -145,13 +149,115 @@ while True:
             event=events2.get(timeout=10)
             if event['type'] in ['closed','eof']: break
         assert write(fresh,1,kind='key',key='Space')[0]==409
+        # Phone resize uses the live generation, resets the screen, and restores on disable/close.
+        def next_event(events, kind):
+            while True:
+                event = events.get(timeout=12)
+                if event['type'] == kind: return event
+                assert event['type'] not in ['closed', 'eof', 'read-error'], event
+        def dimensions(): return tm('display-message','-p','-t',pane,'#{pane_width}x#{pane_height}')
+        original_size = dimensions()
+        original_policy = tm('show-options','-w','-v','-t',pane,'window-size')
+        fresh=open_target(); _, resize_events, _=stream(fresh)
+        assert fresh['capabilities']['resize'] is True
+        assert write(fresh,1,kind='resize',enabled=True,cols=0,rows=18)[0]==400
+        assert write(fresh,1,kind='resize',enabled=True,cols=1001,rows=18)[0]==400
+        assert write(fresh,1,kind='resize',enabled=True,cols=48,rows=18)[0]==200
+        event=next_event(resize_events,'resized')
+        assert (event['cols'],event['rows'])==(48,18), event
+        assert dimensions()=='48x18'
+        # Another authenticated phone may view but cannot own this window's dimensions.
+        assert write(fresh,2,auth=second_token,kind='resize',enabled=True,cols=80,rows=24)[0]==403
+        second=open_target(auth=second_token); _, second_events, _=stream(second,auth=second_token)
+        assert write(second,1,auth=second_token,kind='resize',enabled=True,cols=80,rows=24)[0]==200
+        rejected=next_event(second_events,'resize_rejected')
+        assert '另一个连接' in rejected['reason'], rejected
+        assert dimensions()=='48x18'
+        assert req('/v1/terminal/streams/'+second['generation'],'DELETE',auth=second_token)[0]==204
+        assert dimensions()=='48x18'
+        assert b'UNKNOWN MENU'  in base64.b64decode(event['data'])
+        assert write(fresh,1,kind='resize',enabled=True,cols=60,rows=20)[0]==409
+        assert dimensions()=='48x18'
+        assert write(fresh,2,kind='resize',enabled=True,cols=52,rows=16)[0]==200
+        event=next_event(resize_events,'resized')
+        assert (event['cols'],event['rows'])==(52,16)
+        assert write(fresh,3,kind='resize',enabled=False)[0]==200
+        next_event(resize_events,'resized')
+        assert dimensions()==original_size
+        assert tm('show-options','-w','-v','-t',pane,'window-size')==original_policy
+        assert write(fresh,4,kind='resize',enabled=True,cols=40,rows=14)[0]==200
+        next_event(resize_events,'resized')
+        assert req('/v1/terminal/streams/'+fresh['generation'],'DELETE')[0]==204
+        wait(lambda:dimensions()==original_size,'close did not restore original size')
+        # Replacement must not let the old stream cleanup release the new generation's size.
+        fresh=open_target(); _, resize_events, _=stream(fresh)
+        assert write(fresh,1,kind='resize',enabled=True,cols=46,rows=15)[0]==200
+        next_event(resize_events,'resized')
+        replacement=open_target(); _, replacement_events, _=stream(replacement)
+        assert dimensions()==original_size
+        assert write(replacement,1,kind='resize',enabled=True,cols=50,rows=17)[0]==200
+        next_event(replacement_events,'resized')
+        time.sleep(.8)
+        assert dimensions()=='50x17'
+        assert req('/v1/terminal/streams/'+replacement['generation'],'DELETE')[0]==204
+        wait(lambda:dimensions()==original_size,'replacement close did not restore')
+        # A Mac user's new size must never be overwritten by cleanup.
+        fresh=open_target(); _, resize_events, _=stream(fresh)
+        assert write(fresh,1,kind='resize',enabled=True,cols=44,rows=16)[0]==200
+        next_event(resize_events,'resized')
+        tm('resize-window','-t',pane,'-x','90','-y','29')
+        next_event(resize_events,'closed')
+        time.sleep(.2)
+        assert dimensions()=='90x29'
+        # Restore from the durable journal after daemon termination, without restarting the TUI.
+        original_size=dimensions()
+        fresh=open_target(); _, resize_events, _=stream(fresh)
+        assert write(fresh,1,kind='resize',enabled=True,cols=45,rows=17)[0]==200
+        next_event(resize_events,'resized')
+        service.kill(); service.wait(timeout=5)
+        assert dimensions()=='45x17'
+        service=subprocess.Popen([str(repo/'target/debug/agentmuxd')],env=env,stdout=log,stderr=log)
+        wait(started,'daemon failed to restart')
+        wait(lambda:dimensions()==original_size,'startup recovery did not restore original size')
+        # A phone viewport sizes the target pane, not the entire split window.
+        # Match a common layout: agent at left, two stacked panes at right.
+        other=tm('split-window','-h','-d','-t',pane,'-P','-F','#{pane_id}','/bin/sh')
+        lower=tm('split-window','-v','-d','-t',other,'-P','-F','#{pane_id}','/bin/sh')
+        layout=tm('display-message','-p','-t',pane,'#{window_layout}')
+        fresh=open_target(); _, resize_events, _=stream(fresh)
+        assert write(fresh,1,kind='resize',enabled=True,cols=70,rows=22)[0]==200
+        event=next_event(resize_events,'resized')
+        assert (event['cols'],event['rows'])==(70,22), event
+        assert dimensions()=='70x22'
+        assert write(fresh,2,kind='resize',enabled=True,cols=48,rows=12)[0]==200
+        event=next_event(resize_events,'resized')
+        assert (event['cols'],event['rows'])==(48,12), event
+        assert dimensions()=='48x12'
+        assert write(fresh,3,kind='resize',enabled=True,cols=90,rows=32)[0]==200
+        event=next_event(resize_events,'resized')
+        assert (event['cols'],event['rows'])==(90,32), event
+        members=tm('list-panes','-t',pane,'-F','#{pane_id}').splitlines()
+        assert set(members)=={pane,other,lower}
+        assert req('/v1/terminal/streams/'+fresh['generation'],'DELETE')[0]==204
+        wait(lambda:tm('display-message','-p','-t',pane,'#{window_layout}')==layout,'split layout not restored')
+        # A nested bottom-right target must fit both axes, too.
+        fresh=open_target(target_pane=lower); _, resize_events, _=stream(fresh)
+        for sequence,(cols,rows) in enumerate([(48,12),(70,22)],1):
+            assert write(fresh,sequence,kind='resize',enabled=True,cols=cols,rows=rows)[0]==200
+            event=next_event(resize_events,'resized')
+            assert (event['cols'],event['rows'])==(cols,rows), event
+            assert tm('display-message','-p','-t',lower,'#{pane_width}x#{pane_height}')==f'{cols}x{rows}'
+        assert req('/v1/terminal/streams/'+fresh['generation'],'DELETE')[0]==204
+        wait(lambda:tm('display-message','-p','-t',pane,'#{window_layout}')==layout,'nested split layout not restored')
+        tm('kill-pane','-t',lower)
+        tm('kill-pane','-t',other)
         # Same pane ID reused by respawn must not inherit an input generation.
         fresh=open_target(); _, _, _=stream(fresh)
         tm('respawn-pane','-k','-t',pane,'/bin/sh')
         assert write(fresh,1,kind='key',key='Enter')[0]==409
         # A disconnected generation cannot be reopened or replayed.
         assert req('/v1/terminal/streams/'+fresh['generation'])[0]==409
-        print('PASS: real tmux stream, Unicode, active screen, explicit keys, multiline gating, unchanged grid, generation/sequence checks, mode change, resize and pane respawn.')
+        print('PASS: real tmux stream, Unicode, active screen, explicit keys, multiline gating, unchanged grid, generation/sequence checks, mode change, phone resize/snapshots, restoration, crash recovery, split panes and pane respawn.')
     finally:
         service.terminate()
         try: service.wait(timeout=5)

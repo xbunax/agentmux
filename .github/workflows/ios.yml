@@ -80,7 +80,7 @@ jobs:
           retention-days: 14
 
   previews:
-    if: github.event_name != 'workflow_dispatch' || inputs.capture_previews
+    if: github.event_name == 'workflow_dispatch' && inputs.capture_previews
     runs-on: macos-26
     timeout-minutes: 45
     steps:

@@ -356,7 +356,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         return discovery::connect_cli(std::env::args().nth(2).unwrap_or("SSH device".into()))
             .await;
     }
-    let state_dir = PathBuf::from(std::env::var("AGENTMUX_STATE").unwrap_or(".agentmux".into()));
+    let paths = config::Paths::from_env()?;
+    let state_dir = paths.state;
     let pairing = pairing::Pairing::load(state_dir.clone())?;
     let token_path = state_dir.join("admin.token");
     let token = match std::env::var("AGENTMUX_TOKEN") {
@@ -389,8 +390,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     if token.len() < 32 {
         return Err("AGENTMUX_TOKEN must contain at least 32 characters".into());
     }
-    let config_path =
-        PathBuf::from(std::env::var("AGENTMUX_CONFIG").unwrap_or("agentmux.json".into()));
+    let config_path = paths.config;
     let config = config::load_or_create(&config_path)?;
     let ceiling: Vec<PathBuf> = config
         .roots
@@ -414,9 +414,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         pairing: pairing.clone(),
         managed: agents::Manager::default(),
         relay: relay::Manager::default(),
-        terminal: terminal::Manager::default(),
+        terminal: terminal::Manager::with_journal(&state_dir),
         attachments: attachments::Store::temporary(&state_dir)?,
     });
+    terminal::recover_sizes(&app).await;
     let router = Router::new()
         .route("/v1/pair/issue", post(pairing::issue))
         .route("/v1/pair/complete", post(pairing::complete))

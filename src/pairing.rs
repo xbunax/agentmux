@@ -4,7 +4,7 @@ use russh::server::{self, Server as _};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     sync::Mutex as StdMutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -131,7 +131,10 @@ pub fn private_write(path: &FsPath, bytes: &[u8]) -> std::io::Result<()> {
 }
 impl Pairing {
     pub fn load(directory: PathBuf) -> std::result::Result<Arc<Self>, Box<dyn std::error::Error>> {
-        std::fs::create_dir_all(&directory)?;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&directory)?;
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
         let path = directory.join("ssh_host_ed25519");
         let key = if path.exists() {

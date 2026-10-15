@@ -20,12 +20,28 @@ repo = Path(__file__).resolve().parent.parent
 def run(*command):
     return subprocess.check_output(command, text=True).strip()
 
+def version(value):
+    import re
+    return tuple(int(part) for part in re.findall(r'\d+', value))
+
 runtimes = json.loads(run('xcrun', 'simctl', 'list', 'runtimes', '-j'))['runtimes']
-runtime = next((r['identifier'] for r in reversed(runtimes) if r.get('isAvailable') and r['name'].startswith('iOS')), None)
-if not runtime:
+installed = sorted((r for r in runtimes if r.get('isAvailable') and r['name'].startswith('iOS')), key=lambda r: version(r['version']), reverse=True)
+if not installed:
     raise SystemExit('Install an iOS simulator runtime in Xcode before running this preview.')
+runtime_info = installed[0]
+runtime = runtime_info['identifier']
 types = json.loads(run('xcrun', 'simctl', 'list', 'devicetypes', '-j'))['devicetypes']
-device = next(t['identifier'] for t in reversed(types) if t['name'].startswith('iPhone') and 'Pro Max' not in t['name'])
+# simctl's device-type list is not chronological; reversing it can select iPhone 6s.
+# Use this runtime's supported types, or types of existing devices for that runtime.
+supported = {item['identifier'] for item in runtime_info.get('supportedDeviceTypes', [])}
+if not supported:
+    devices = json.loads(run('xcrun', 'simctl', 'list', 'devices', 'available', '-j'))['devices']
+    supported = {item.get('deviceTypeIdentifier') for item in devices.get(runtime, [])}
+candidates = [item for item in types if item['identifier'] in supported and item['name'].startswith('iPhone') and 'Pro Max' not in item['name']]
+if not candidates:
+    raise SystemExit('No compatible iPhone type found for ' + runtime)
+device = max(candidates, key=lambda item: version(item['name']))['identifier']
+print('Preview simulator:', device, runtime, flush=True)
 sim = run('xcrun', 'simctl', 'create', 'AgentMux isolated preview', device, runtime)
 try:
     subprocess.run(['xcodegen', 'generate'], cwd=repo / 'ios', check=True)

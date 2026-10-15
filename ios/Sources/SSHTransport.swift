@@ -157,7 +157,7 @@ actor SSHTransport {
         timeout.cancel()
         struct Enrollment: Decodable { let version: Int; let api_port: Int; let token: String; let device_id: String }
         let enrollment = try JSONDecoder().decode(Enrollment.self, from: Data(output.readableBytesView))
-        guard enrollment.version == 1, enrollment.api_port == 9847,
+        guard enrollment.version == 1, (1...65535).contains(enrollment.api_port),
               enrollment.token.count >= 32, UUID(uuidString: enrollment.device_id) != nil else {
             throw SSHConnectionError.message("AgentMux 服务返回了无效的连接信息")
         }

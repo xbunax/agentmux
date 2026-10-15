@@ -368,13 +368,13 @@ impl server::Handler for Ssh {
         reply: server::ChannelOpenHandle,
         _: &mut server::Session,
     ) -> std::result::Result<(), Self::Error> {
-        if host != "127.0.0.1" || port != 9847 {
+        if host != "127.0.0.1" || port != u32::from(api_port()) {
             reply
                 .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
                 .await;
             return Ok(());
         }
-        match tokio::net::TcpStream::connect("127.0.0.1:9847").await {
+        match tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, api_port())).await {
             Ok(mut socket) => {
                 reply.accept().await;
                 tokio::spawn(async move {
@@ -444,7 +444,7 @@ pub async fn pair_cli(
         .timeout(Duration::from_secs(10))
         .build()?;
     let response = client
-        .post("http://127.0.0.1:9847/v1/pair/issue")
+        .post(format!("http://127.0.0.1:{}/v1/pair/issue", api_port()))
         .bearer_auth(token)
         .json(&serde_json::json!({"host":host}))
         .send()

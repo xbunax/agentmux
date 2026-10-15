@@ -20,7 +20,8 @@ tmux = shutil.which("tmux")
 assert tmux, "tmux is required"
 with socket.socket() as probe:
     probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    probe.bind(("127.0.0.1", 9847))
+    probe.bind(("127.0.0.1", 0))
+    api_port = probe.getsockname()[1]
 with tempfile.TemporaryDirectory(prefix="agentmux-test-") as temporary:
     root = Path(temporary).resolve()
     project = root / "project"
@@ -48,6 +49,7 @@ with tempfile.TemporaryDirectory(prefix="agentmux-test-") as temporary:
     env = dict(
         os.environ,
         AGENTMUX_TOKEN=token,
+        AGENTMUX_API_PORT=str(api_port),
         AGENTMUX_CONFIG=str(config_path),
         AGENTMUX_TMUX=str(wrapper),
         AGENTMUX_STATE=str(root / "state"),
@@ -71,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix="agentmux-test-") as temporary:
         if authenticated:
             headers["Authorization"] = "Bearer " + token
         req = urllib.request.Request(
-            "http://127.0.0.1:9847" + path, data=data, method=method, headers=headers
+            f"http://127.0.0.1:{api_port}" + path, data=data, method=method, headers=headers
         )
         try:
             # URL is constructed above with a fixed HTTP loopback origin, never user input.

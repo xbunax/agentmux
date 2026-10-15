@@ -1,4 +1,4 @@
-//! Long-lived native JSONL adapters. Existing tmux panes remain terminal-only.
+//! Long-lived provider-native JSONL adapters for daemon-owned sessions.
 use crate::*;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -18,6 +18,8 @@ pub struct ChatMessage {
     id: String,
     role: String,
     text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool: Option<transcripts::Tool>,
 }
 #[derive(Serialize, Clone)]
 pub struct Model {
@@ -37,6 +39,22 @@ pub struct Approval {
     detail: String,
     options: Vec<String>,
     kind: String,
+    questions: Vec<Question>,
+}
+#[derive(Serialize, Clone)]
+struct Question {
+    id: String,
+    title: String,
+    prompt: String,
+    options: Vec<QuestionOption>,
+    multiple: bool,
+    other: bool,
+    secret: bool,
+}
+#[derive(Serialize, Clone)]
+struct QuestionOption {
+    label: String,
+    description: String,
 }
 #[derive(Serialize, Clone, Default)]
 pub struct Snapshot {
@@ -152,7 +170,7 @@ impl Managed {
             "codex" => {
                 self.rpc(
                     "initialize",
-                    json!({"clientInfo":{"name":"agentmux","version":"0.2.0"}}),
+                    json!({"clientInfo":{"name":"agentmux","title":"AgentMux","version":"0.3.0"}}),
                 )
                 .await?;
                 self.write(json!({"method":"initialized"})).await?;
@@ -229,7 +247,11 @@ impl Managed {
         match self.agent.as_str() {
             "pi" => match kind {
                 "agent_start" => state.busy = true,
-                "agent_settled" => state.busy = false,
+                "agent_settled" => {
+                    state.busy = false;
+                    state.approvals.clear();
+                    self.approvals.lock().await.clear();
+                }
                 "message_start" if value["message"]["role"] == "assistant" => {
                     upsert(&mut state, "stream", "assistant", "".into(), false)
                 }
@@ -257,24 +279,30 @@ impl Managed {
                         state.error = Some(error.into());
                     }
                 }
-                "tool_execution_start" => upsert(
-                    &mut state,
-                    &text(&value, "toolCallId"),
-                    "tool",
-                    format!("{}\n{}", text(&value, "toolName"), value["args"]),
-                    false,
-                ),
-                "tool_execution_end" => upsert(
-                    &mut state,
-                    &text(&value, "toolCallId"),
-                    "tool",
-                    format!(
-                        "{}\n{}",
-                        text(&value, "toolName"),
-                        content(&value["result"]["content"])
-                    ),
-                    false,
-                ),
+                "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
+                    let result = if kind == "tool_execution_update" {
+                        &value["partialResult"]
+                    } else {
+                        &value["result"]
+                    };
+                    tool_message(
+                        &mut state,
+                        &text(&value, "toolCallId"),
+                        transcripts::Tool {
+                            name: text(&value, "toolName"),
+                            input: pretty(&value["args"]),
+                            output: content(&result["content"]),
+                            status: if kind != "tool_execution_end" {
+                                "running"
+                            } else if value["isError"] == true {
+                                "error"
+                            } else {
+                                "completed"
+                            }
+                            .into(),
+                        },
+                    );
+                }
                 "extension_ui_request" => {
                     let method = text(&value, "method");
                     if ["confirm", "select", "input", "editor"].contains(&method.as_str()) {
@@ -288,6 +316,7 @@ impl Managed {
                                 .filter_map(|v| v.as_str().map(String::from))
                                 .collect(),
                             kind: method,
+                            questions: vec![],
                         });
                         self.approvals.lock().await.insert(id, value.clone());
                     } else if method == "notify" {
@@ -322,31 +351,22 @@ impl Managed {
                     }
                 }
                 "assistant" => {
-                    upsert(
-                        &mut state,
-                        "stream",
-                        "assistant",
-                        content(&value["message"]["content"]),
-                        false,
-                    );
-                    if let Some(m) = state.messages.iter_mut().find(|m| m.id == "stream") {
-                        m.id = uuid::Uuid::new_v4().to_string();
+                    record_claude_tools(&mut state, &value);
+                    let answer = content(&value["message"]["content"]);
+                    state.messages.retain(|m| m.id != "stream");
+                    if !answer.is_empty() {
+                        let id = value["message"]["id"]
+                            .as_str()
+                            .map(String::from)
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                        upsert(&mut state, &id, "assistant", answer, false);
                     }
                 }
-                "user" => {
-                    let result = content(&value["message"]["content"]);
-                    if !result.is_empty() {
-                        upsert(
-                            &mut state,
-                            &uuid::Uuid::new_v4().to_string(),
-                            "tool",
-                            result,
-                            false,
-                        );
-                    }
-                }
+                "user" => record_claude_tools(&mut state, &value),
                 "result" => {
                     state.busy = false;
+                    state.approvals.clear();
+                    self.approvals.lock().await.clear();
                     if value["is_error"] == true {
                         state.error = Some(value.to_string());
                     }
@@ -359,7 +379,19 @@ impl Managed {
                         title: text(request, "tool_name"),
                         detail: request["input"].to_string(),
                         options: vec![],
-                        kind: "confirm".into(),
+                        kind: if request["subtype"] != "can_use_tool" {
+                            "unsupported"
+                        } else if request["tool_name"] == "AskUserQuestion" {
+                            "questions"
+                        } else {
+                            "confirm"
+                        }
+                        .into(),
+                        questions: if request["tool_name"] == "AskUserQuestion" {
+                            questions(&request["input"]["questions"], true)
+                        } else {
+                            vec![]
+                        },
                     });
                     self.approvals.lock().await.insert(id, value.clone());
                 }
@@ -374,6 +406,8 @@ impl Managed {
                     }
                     "turn/completed" => {
                         state.busy = false;
+                        state.approvals.clear();
+                        self.approvals.lock().await.clear();
                         if !params["turn"]["error"].is_null() {
                             state.error = Some(params["turn"]["error"].to_string());
                         }
@@ -385,26 +419,45 @@ impl Managed {
                         text(params, "delta"),
                         true,
                     ),
-                    "item/completed" => {
+                    "serverRequest/resolved" => {
+                        let key = params["requestId"].to_string();
+                        state.approvals.retain(|a| a.id != key);
+                        self.approvals.lock().await.remove(&key);
+                    }
+                    "item/started" | "item/completed" => {
                         let item = &params["item"];
                         let id = text(item, "id");
                         if item["type"] == "agentMessage" {
                             upsert(&mut state, &id, "assistant", text(item, "text"), false);
-                        } else if item["type"] != "userMessage" {
-                            upsert(&mut state, &id, "tool", item.to_string(), false);
+                        } else if let Some(tool) = codex_tool(item, kind == "item/started") {
+                            tool_message(&mut state, &id, tool);
                         }
                     }
                     "error" => state.error = Some(params.to_string()),
                     _ => {
                         if let Some(id) = value.get("id") {
                             let key = id.to_string();
-                            let supported = kind.ends_with("requestApproval");
+                            let supported =
+                                codex_confirm(kind) || kind == "item/permissions/requestApproval";
+                            let (title, detail) = codex_request_description(kind, params);
                             state.approvals.push(Approval {
                                 id: key.clone(),
-                                title: kind.into(),
-                                detail: params.to_string(),
+                                title,
+                                detail,
                                 options: vec![],
-                                kind: if supported { "confirm" } else { "unsupported" }.into(),
+                                kind: if kind == "item/tool/requestUserInput" {
+                                    "questions"
+                                } else if supported {
+                                    "confirm"
+                                } else {
+                                    "unsupported"
+                                }
+                                .into(),
+                                questions: if kind == "item/tool/requestUserInput" {
+                                    questions(&params["questions"], false)
+                                } else {
+                                    vec![]
+                                },
                             });
                             self.approvals.lock().await.insert(key, value.clone());
                         }
@@ -412,10 +465,10 @@ impl Managed {
                 }
             }
         }
-        let mut bytes: usize = state.messages.iter().map(|m| m.text.len()).sum();
-        while state.messages.len() > 500 || (bytes > 4 * 1024 * 1024 && state.messages.len() > 1) {
+        let mut bytes: usize = state.messages.iter().map(message_size).sum();
+        while state.messages.len() > 500 || (bytes > 2 * 1024 * 1024 && state.messages.len() > 1) {
             let removed = state.messages.remove(0);
-            bytes = bytes.saturating_sub(removed.text.len());
+            bytes = bytes.saturating_sub(message_size(&removed));
         }
     }
 }
@@ -433,13 +486,215 @@ fn content(value: &Value) -> String {
         .iter()
         .map(|v| match v["type"].as_str() {
             Some("text") => text(v, "text"),
-            Some("tool_use") => format!("🔧 {}\n{}", text(v, "name"), v["input"]),
             Some("tool_result") => content(&v["content"]),
             _ => String::new(),
         })
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
+}
+fn pretty(value: &Value) -> String {
+    if value.is_null() {
+        String::new()
+    } else if let Some(s) = value.as_str() {
+        s.into()
+    } else {
+        serde_json::to_string_pretty(value).unwrap_or_default()
+    }
+}
+fn codex_confirm(method: &str) -> bool {
+    // Permissions and user-input requests have DIFFERENT response schemas.
+    matches!(
+        method,
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
+    )
+}
+fn message_size(message: &ChatMessage) -> usize {
+    message.text.len()
+        + message
+            .tool
+            .as_ref()
+            .map(|t| t.name.len() + t.input.len() + t.output.len())
+            .unwrap_or_default()
+}
+fn codex_request_description(method: &str, params: &Value) -> (String, String) {
+    match method {
+        "item/tool/requestUserInput" => ("需要你的回答".into(), String::new()),
+        "item/commandExecution/requestApproval" => (
+            "允许运行命令？".into(),
+            format!(
+                "{}\n{}\n{}",
+                pretty(&params["command"]),
+                text(params, "cwd"),
+                text(params, "reason")
+            ),
+        ),
+        "item/fileChange/requestApproval" => (
+            "允许修改文件？".into(),
+            format!(
+                "{}\n{}",
+                text(params, "reason"),
+                pretty(&params["grantRoot"])
+            ),
+        ),
+        "item/permissions/requestApproval" => (
+            "授予当前任务所需权限？".into(),
+            format!(
+                "{}\n仅对当前任务有效。\n{}",
+                text(params, "reason"),
+                pretty(&params["permissions"])
+            ),
+        ),
+        _ => (
+            "需要在 Mac 上处理的请求".into(),
+            format!("{}\n{}", method, pretty(params)),
+        ),
+    }
+}
+fn questions(value: &Value, claude: bool) -> Vec<Question> {
+    array(value)
+        .iter()
+        .map(|q| Question {
+            id: text(q, if claude { "question" } else { "id" }),
+            title: text(q, "header"),
+            prompt: text(q, "question"),
+            options: array(&q["options"])
+                .iter()
+                .map(|o| QuestionOption {
+                    label: text(o, "label"),
+                    description: text(o, "description"),
+                })
+                .collect(),
+            multiple: claude && q["multiSelect"] == true,
+            other: claude || q["isOther"] == true || array(&q["options"]).is_empty(),
+            secret: q["isSecret"] == true,
+        })
+        .collect()
+}
+fn validate_answers(questions: &[Question], answers: &HashMap<String, Vec<String>>) -> Result<()> {
+    if questions.is_empty() || answers.len() != questions.len() {
+        return Err(bad("Answer every requested question"));
+    }
+    for question in questions {
+        let values = answers
+            .get(&question.id)
+            .ok_or_else(|| bad("Missing question answer"))?;
+        if values.is_empty()
+            || (!question.multiple && values.len() != 1)
+            || values.iter().any(|a| {
+                a.trim().is_empty()
+                    || a.len() > 16384
+                    || (!question.other && !question.options.iter().any(|o| o.label == *a))
+            })
+        {
+            return Err(bad("Invalid question answer"));
+        }
+    }
+    Ok(())
+}
+fn codex_approval_response(
+    raw: &Value,
+    approved: bool,
+    answers: &HashMap<String, Vec<String>>,
+) -> Result<Value> {
+    let method = raw["method"].as_str().unwrap_or_default();
+    if codex_confirm(method) {
+        return Ok(json!({"decision":if approved {"accept"}else{"decline"}}));
+    }
+    if method == "item/permissions/requestApproval" {
+        let permissions = &raw["params"]["permissions"];
+        if !permissions.is_object() {
+            return Err(bad("Invalid permissions request"));
+        }
+        return Ok(
+            json!({"permissions":if approved {permissions.clone()} else {json!({})},"scope":"turn"}),
+        );
+    }
+    if method == "item/tool/requestUserInput" {
+        let fields = questions(&raw["params"]["questions"], false);
+        if approved {
+            validate_answers(&fields, answers)?;
+        }
+        return Ok(
+            json!({"answers":fields.iter().map(|q|(q.id.clone(),json!({"answers":if approved {answers[&q.id].clone()} else {vec![]}}))).collect::<serde_json::Map<_,_>>()}),
+        );
+    }
+    Err(bad("Unsupported request; interrupt the turn"))
+}
+fn codex_tool(item: &Value, started: bool) -> Option<transcripts::Tool> {
+    let kind = item["type"].as_str()?;
+    let (name, input, output) = match kind {
+        "commandExecution" => (
+            "运行命令".into(),
+            pretty(&item["command"]),
+            text(item, "aggregatedOutput"),
+        ),
+        "fileChange" => ("修改文件".into(), pretty(&item["changes"]), String::new()),
+        "mcpToolCall" => (
+            format!("{} / {}", text(item, "server"), text(item, "tool")),
+            pretty(&item["arguments"]),
+            pretty(&item["result"]),
+        ),
+        "dynamicToolCall" => (
+            text(item, "tool"),
+            pretty(&item["arguments"]),
+            pretty(&item["contentItems"]),
+        ),
+        "webSearch" => (
+            "搜索网页".into(),
+            text(item, "query"),
+            pretty(&item["action"]),
+        ),
+        _ => return None,
+    };
+    Some(transcripts::Tool {
+        name,
+        input,
+        output,
+        status: if started {
+            "running"
+        } else if item["status"] == "failed"
+            || item["status"] == "declined"
+            || item["exitCode"].as_i64().is_some_and(|code| code != 0)
+        {
+            "error"
+        } else {
+            "completed"
+        }
+        .into(),
+    })
+}
+fn record_claude_tools(state: &mut Snapshot, value: &Value) {
+    let mut record = value.clone();
+    if record["message"]["role"].is_null() {
+        record["message"]["role"] = record["type"].clone();
+    }
+    for message in transcripts::parse("claude", &[record]) {
+        if let Some(tool) = message.tool {
+            tool_message(state, &message.id, tool);
+        }
+    }
+}
+fn tool_message(state: &mut Snapshot, id: &str, mut tool: transcripts::Tool) {
+    if let Some(old) = state
+        .messages
+        .iter()
+        .find(|m| m.id == id)
+        .and_then(|m| m.tool.as_ref())
+    {
+        if tool.input.is_empty() {
+            tool.input = old.input.clone();
+        }
+        if tool.name.is_empty() || tool.name == "工具" {
+            tool.name = old.name.clone();
+        }
+    }
+    tool.input = tool.input.chars().take(32768).collect();
+    tool.output = tool.output.chars().take(65536).collect();
+    upsert(state, id, "tool", String::new(), false);
+    if let Some(message) = state.messages.iter_mut().find(|m| m.id == id) {
+        message.tool = Some(tool);
+    }
 }
 fn upsert(state: &mut Snapshot, id: &str, role: &str, text: String, append: bool) {
     let text: String = text.chars().take(128 * 1024).collect();
@@ -456,6 +711,7 @@ fn upsert(state: &mut Snapshot, id: &str, role: &str, text: String, append: bool
             id: id.into(),
             role: role.into(),
             text,
+            tool: None,
         });
     }
 }
@@ -602,6 +858,8 @@ pub struct Action {
     request_id: String,
     #[serde(default)]
     approved: bool,
+    #[serde(default)]
+    answers: HashMap<String, Vec<String>>,
 }
 pub async fn action(
     State(app): State<Shared>,
@@ -611,11 +869,12 @@ pub async fn action(
 ) -> Result<Json<Value>> {
     authorize(&headers, &app)?;
     let session = find(&app, &id).await?;
-    let _operation = if ["message", "model", "command"].contains(&request.action.as_str()) {
-        Some(session.operations.lock().await)
-    } else {
-        None
-    };
+    let _operation =
+        if ["message", "model", "command", "approval"].contains(&request.action.as_str()) {
+            Some(session.operations.lock().await)
+        } else {
+            None
+        };
     if !session.state.lock().await.alive {
         return Err(bad("Agent has exited"));
     }
@@ -669,6 +928,13 @@ pub async fn action(
                     session.rpc("turn/start",json!({"threadId":thread,"model":model,"input":[{"type":"text","text":request.text}]})).await
                 }
             };
+            if session.agent == "pi"
+                && result
+                    .as_ref()
+                    .is_ok_and(|value| value["disposition"] == "handled")
+            {
+                session.state.lock().await.busy = false;
+            }
             if let Err(error) = result {
                 let mut s = session.state.lock().await;
                 s.error = Some(error.1.clone());
@@ -788,19 +1054,28 @@ pub async fn action(
                             "Unsupported Claude control request; interrupt the turn",
                         ));
                     }
+                    let mut input = raw["request"]["input"].clone();
+                    if request.approved && raw["request"]["tool_name"] == "AskUserQuestion" {
+                        let fields = questions(&input["questions"], true);
+                        validate_answers(&fields, &request.answers)?;
+                        input["answers"] = Value::Object(
+                            request
+                                .answers
+                                .iter()
+                                .map(|(key, values)| (key.clone(), json!(values.join(", "))))
+                                .collect(),
+                        );
+                    }
                     let decision = if request.approved {
-                        json!({"behavior":"allow","updatedInput":raw["request"]["input"]})
+                        json!({"behavior":"allow","updatedInput":input})
                     } else {
                         json!({"behavior":"deny","message":"Denied on phone"})
                     };
                     json!({"type":"control_response","response":{"subtype":"success","request_id":raw["request_id"],"response":decision}})
                 }
                 _ => {
-                    let method = text(&raw, "method");
-                    if !method.ends_with("requestApproval") {
-                        return Err(bad("Unsupported request; interrupt the turn"));
-                    }
-                    json!({"id":raw["id"],"result":{"decision":if request.approved {"accept"} else {"decline"}}})
+                    let result = codex_approval_response(&raw, request.approved, &request.answers)?;
+                    json!({"id":raw["id"],"result":result})
                 }
             };
             session.write(response).await?;
@@ -816,4 +1091,66 @@ pub async fn action(
         _ => return Err(bad("Unknown action")),
     };
     Ok(Json(response))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn codex_permission_requests_use_permission_profiles_not_command_decisions() {
+        let raw = json!({"method":"item/permissions/requestApproval","params":{"permissions":{"network":{"enabled":true}}}});
+        let accepted = codex_approval_response(&raw, true, &HashMap::new()).unwrap();
+        assert_eq!(
+            accepted,
+            json!({"permissions":{"network":{"enabled":true}},"scope":"turn"})
+        );
+        assert_eq!(
+            codex_approval_response(&raw, false, &HashMap::new()).unwrap(),
+            json!({"permissions":{},"scope":"turn"})
+        );
+        assert!(!codex_confirm("item/permissions/requestApproval"));
+        assert!(codex_confirm("item/commandExecution/requestApproval"));
+        assert!(
+            codex_approval_response(
+                &json!({"method":"unknown/requestApproval"}),
+                true,
+                &HashMap::new()
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn codex_questions_require_valid_answers_and_preserve_the_wire_shape() {
+        let raw = json!({"method":"item/tool/requestUserInput","params":{"questions":[{"id":"q","header":"Database","question":"Choose one","options":[{"label":"SQLite","description":"Local"}]}]}});
+        assert!(codex_approval_response(&raw, true, &HashMap::new()).is_err());
+        let mut answers = HashMap::from([("q".into(), vec!["SQLite".into()])]);
+        assert_eq!(
+            codex_approval_response(&raw, true, &answers).unwrap(),
+            json!({"answers":{"q":{"answers":["SQLite"]}}})
+        );
+        answers.insert("q".into(), vec!["unknown".into()]);
+        assert!(codex_approval_response(&raw, true, &answers).is_err());
+        assert_eq!(
+            codex_approval_response(&raw, false, &HashMap::new()).unwrap(),
+            json!({"answers":{"q":{"answers":[]}}})
+        );
+    }
+    #[test]
+    fn claude_tools_keep_inputs_when_results_arrive() {
+        let mut state = Snapshot::default();
+        record_claude_tools(
+            &mut state,
+            &json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"ls"}}]}}),
+        );
+        record_claude_tools(
+            &mut state,
+            &json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"file.txt","is_error":false}]}}),
+        );
+        assert_eq!(state.messages.len(), 1);
+        let tool = state.messages[0].tool.as_ref().unwrap();
+        assert_eq!(tool.name, "Bash");
+        assert!(tool.input.contains("ls"));
+        assert_eq!(tool.output, "file.txt");
+        assert_eq!(tool.status, "completed");
+    }
 }

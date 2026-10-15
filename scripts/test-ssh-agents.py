@@ -25,10 +25,11 @@ parser.add_argument("--live", action="store_true")
 args = parser.parse_args()
 repo = Path(__file__).resolve().parent.parent
 binary = os.environ.get("AGENTMUX_BINARY", str(repo / "target/debug/agentmuxd"))
-for port in [9847, 9848]:
-    with socket.socket() as probe:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        probe.bind(("127.0.0.1", port))
+with socket.socket() as api_probe, socket.socket() as ssh_probe:
+    api_probe.bind(("127.0.0.1", 0))
+    ssh_probe.bind(("127.0.0.1", 0))
+    api_port = api_probe.getsockname()[1]
+    ssh_port = ssh_probe.getsockname()[1]
 
 
 class Pinned(paramiko.MissingHostKeyPolicy):
@@ -69,10 +70,11 @@ with tempfile.TemporaryDirectory(prefix="agentmux-ssh-test-") as temporary:
     env = dict(
         os.environ,
         AGENTMUX_TOKEN=admin,
+        AGENTMUX_API_PORT=str(api_port),
         AGENTMUX_CONFIG=str(config),
         AGENTMUX_STATE=str(root / "state"),
         AGENTMUX_DISCOVERY=str(root / "service.json"),
-        AGENTMUX_SSH_BIND="127.0.0.1:9848",
+        AGENTMUX_SSH_BIND=f"127.0.0.1:{ssh_port}",
     )
     env.pop("AGENTMUX_SSH_DISABLED", None)
     log = (root / "service.log").open("w+")
@@ -97,7 +99,7 @@ with tempfile.TemporaryDirectory(prefix="agentmux-ssh-test-") as temporary:
         return result
 
     def local(path, value):
-        connection = http.client.HTTPConnection("127.0.0.1", 9847, timeout=10)
+        connection = http.client.HTTPConnection("127.0.0.1", api_port, timeout=10)
         try:
             connection.request(
                 "POST",
@@ -119,7 +121,7 @@ with tempfile.TemporaryDirectory(prefix="agentmux-ssh-test-") as temporary:
         client.set_missing_host_key_policy(Pinned(code["host_key"]))
         client.connect(
             "127.0.0.1",
-            port=9848,
+            port=ssh_port,
             username="agentmux",
             password=credential,
             look_for_keys=False,
@@ -132,10 +134,10 @@ with tempfile.TemporaryDirectory(prefix="agentmux-ssh-test-") as temporary:
 
     def request(client, token, path, method="GET", value=None) -> tuple[int, Any]:
         channel = transport(client).open_channel(
-            "direct-tcpip", ("127.0.0.1", 9847), ("127.0.0.1", 0), timeout=10
+            "direct-tcpip", ("127.0.0.1", api_port), ("127.0.0.1", 0), timeout=10
         )
         channel.settimeout(35)
-        connection = http.client.HTTPConnection("127.0.0.1", 9847, timeout=35)
+        connection = http.client.HTTPConnection("127.0.0.1", api_port, timeout=35)
         connection.sock = channel
         body = None if value is None else json.dumps(value).encode()
         connection.request(
@@ -156,7 +158,7 @@ with tempfile.TemporaryDirectory(prefix="agentmux-ssh-test-") as temporary:
     try:
         for _ in range(100):
             try:
-                with socket.create_connection(("127.0.0.1", 9848), timeout=0.1):
+                with socket.create_connection(("127.0.0.1", ssh_port), timeout=0.1):
                     break
             except OSError:
                 if process.poll() is not None:

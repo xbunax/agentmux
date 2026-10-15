@@ -8,6 +8,11 @@ struct Service {
     version: u8,
     executable: PathBuf,
     admin_token: String,
+    #[serde(default = "default_api_port")]
+    api_port: u16,
+}
+fn default_api_port() -> u16 {
+    9847
 }
 
 fn path() -> std::io::Result<PathBuf> {
@@ -36,6 +41,7 @@ pub fn publish(app: &App) -> std::result::Result<(), Box<dyn std::error::Error>>
             version: 1,
             executable: std::env::current_exe()?,
             admin_token: app.token.clone(),
+            api_port: api_port(),
         })?,
     )?;
     Ok(())
@@ -56,7 +62,7 @@ pub async fn connect_cli(name: String) -> std::result::Result<(), Box<dyn std::e
         .timeout(std::time::Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .build()?
-        .post("http://127.0.0.1:9847/v1/devices")
+        .post(format!("http://127.0.0.1:{}/v1/devices", service.api_port))
         .bearer_auth(service.admin_token)
         .json(&serde_json::json!({"name": name}))
         .send()
@@ -64,7 +70,7 @@ pub async fn connect_cli(name: String) -> std::result::Result<(), Box<dyn std::e
         .error_for_status()?;
     let mut result: serde_json::Value = response.json().await?;
     result["version"] = 1.into();
-    result["api_port"] = 9847.into();
+    result["api_port"] = service.api_port.into();
     // Only the new device credential is returned over SSH, never the administrator token.
     println!("{}", serde_json::to_string(&result)?);
     Ok(())

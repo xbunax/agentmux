@@ -1,0 +1,70 @@
+// Exercise the actual extension with a public-API fixture; no Pi auth or model calls.
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, stat, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import extension from '../integrations/pi/agentmux.ts';
+
+const directory = await mkdtemp(join(tmpdir(), 'agentmux-pi-'));
+process.env.AGENTMUX_BRIDGE_DIR = directory;
+const handlers = new Map();
+let idle = true, editor = '', sends = 0, aborted = 0, chosen = '';
+const model = { id: 'test-model', name: 'Fixture', provider: 'fixture' };
+const ctx = {
+    cwd: '/fixture', model,
+    ui: { getEditorText: () => editor, notify() {} },
+    sessionManager: { getBranch: () => [{ type: 'message', id: 'first', parentId: null, message: { role: 'user', content: 'Hello' } }], getSessionId: () => 'fixture-session' },
+    modelRegistry: { getAvailable: () => [model] },
+    isIdle: () => idle, hasPendingMessages: () => false,
+    abort: () => { aborted++; idle = true; },
+};
+const api = {
+    on: (name, handler) => handlers.set(name, handler),
+    sendUserMessage: text => { assert.equal(text, 'from phone'); sends++; idle = false; },
+    setModel: async value => { chosen = value.id; return true; },
+};
+extension(api);
+try {
+    await handlers.get('session_start')({}, ctx);
+    const path = join(directory, `pi-${process.pid}.json`);
+    let manifest;
+    for (let attempt = 0; attempt < 100; attempt++) {
+        try { manifest = JSON.parse(await readFile(path, 'utf8')); break; }
+        catch { await new Promise(resolve => setTimeout(resolve, 10)); }
+    }
+    assert.ok(manifest);
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    const origin = `http://127.0.0.1:${manifest.port}`;
+    const headers = { Authorization: `Bearer ${manifest.token}`, 'Content-Type': 'application/json' };
+    const action = value => fetch(origin + '/actions', { method: 'POST', headers, body: JSON.stringify({ agent_pid: process.pid, ...value }) });
+    assert.equal((await fetch(origin + '/snapshot')).status, 401);
+    let snapshot = await (await fetch(origin + '/snapshot', { headers })).json();
+    assert.equal(snapshot.entries[0].message.content, 'Hello');
+    assert.equal(snapshot.can_send, true);
+    editor = 'Mac draft';
+    assert.equal((await action({ action: 'message', text: 'from phone', request_id: 'draft' })).status, 409);
+    editor = '';
+    handlers.get('ui_prompt_start')({});
+    assert.equal((await action({ action: 'message', text: 'from phone', request_id: 'dialog' })).status, 409);
+    handlers.get('ui_prompt_end')({});
+    const message = { action: 'message', text: 'from phone', request_id: 'once' };
+    assert.equal((await action(message)).status, 200);
+    assert.equal((await action(message)).status, 200);
+    assert.equal(sends, 1);
+    assert.equal((await action({ ...message, text: 'changed' })).status, 409);
+    assert.equal((await action({ ...message, request_id: 'twice' })).status, 409);
+    handlers.get('message_update')({ message: { role: 'assistant', content: [{ type: 'text', text: 'streaming' }] } }, ctx);
+    snapshot = await (await fetch(origin + '/snapshot', { headers })).json();
+    assert.equal(snapshot.entries.at(-1).message.content[0].text, 'streaming');
+    assert.equal((await action({ action: 'abort' })).status, 200);
+    assert.equal(aborted, 1);
+    handlers.get('agent_settled')({}, ctx);
+    assert.equal((await action({ action: 'model', model: model.id, provider: model.provider })).status, 200);
+    assert.equal(chosen, model.id);
+    assert.equal((await action({ action: 'model', model: 'unavailable', provider: 'fixture' })).status, 400);
+    assert.equal((await action({ action: 'abort', agent_pid: process.pid + 1 })).status, 409);
+    console.log('PASS: Pi same-process SDK bridge authentication, private discovery, conversation/streaming, drafts/dialog protection, send deduplication, cancellation, model selection and PID binding');
+} finally {
+    await handlers.get('session_shutdown')({}, ctx);
+    await rm(directory, { recursive: true, force: true });
+}

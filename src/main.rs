@@ -2,6 +2,10 @@ mod agents;
 mod config;
 mod discovery;
 mod pairing;
+mod pi_bridge;
+mod relay;
+mod tmux_agents;
+mod transcripts;
 
 use axum::{
     Json, Router,
@@ -25,6 +29,13 @@ fn bad(message: impl ToString) -> Error {
 fn internal(message: impl ToString) -> Error {
     (StatusCode::INTERNAL_SERVER_ERROR, message.to_string())
 }
+fn api_port() -> u16 {
+    std::env::var("AGENTMUX_API_PORT")
+        .unwrap_or_else(|_| "9847".into())
+        .parse::<std::num::NonZeroU16>()
+        .expect("AGENTMUX_API_PORT must be between 1 and 65535")
+        .get()
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Config {
@@ -47,6 +58,7 @@ struct App {
     tmux: String,
     pairing: Arc<pairing::Pairing>,
     managed: agents::Manager,
+    relay: relay::Manager,
 }
 type Shared = Arc<App>;
 fn authorize(headers: &HeaderMap, app: &App) -> Result<()> {
@@ -142,53 +154,15 @@ async fn update_settings(
     *current = next.clone();
     Ok(Json(next))
 }
-#[derive(Serialize)]
-struct Session {
-    id: String,
-    name: String,
-    directory: String,
-    command: String,
-    mode: &'static str,
-}
-async fn sessions(State(app): State<Shared>, headers: HeaderMap) -> Result<Json<Vec<Session>>> {
+async fn sessions(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<tmux_agents::Session>>> {
     authorize(&headers, &app)?;
-    let text = match tmux(&app, &["list-panes", "-a", "-F", "#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_path}\t#{pane_current_command}"]).await {
-        Ok(text) => text,
-        Err((_, text)) if text.contains("no server running") || text.contains("no sessions") => return Ok(Json(vec![])),
-        Err(error) => return Err(error),
-    };
-    let config = app.config.lock().await;
-    Ok(Json(
-        text.lines()
-            .filter_map(|line| {
-                let fields: Vec<_> = line.split('\t').collect();
-                if fields.len() != 4 || confined(FsPath::new(fields[2]), &config.roots).is_err() {
-                    return None;
-                }
-                Some(Session {
-                    id: fields[0].into(),
-                    name: fields[1].into(),
-                    directory: fields[2].into(),
-                    command: fields[3].into(),
-                    mode: "terminal",
-                })
-            })
-            .collect(),
-    ))
+    Ok(Json(tmux_agents::discover(&app).await?))
 }
 async fn check_pane(app: &App, id: &str) -> Result<()> {
-    if !id.starts_with('%') || id.len() < 2 || !id[1..].bytes().all(|b| b.is_ascii_digit()) {
-        return Err(bad("Invalid pane ID"));
-    }
-    let directory = tmux(
-        app,
-        &["display-message", "-p", "-t", id, "#{pane_current_path}"],
-    )
-    .await?;
-    confined(
-        FsPath::new(directory.trim_end()),
-        &app.config.lock().await.roots,
-    )?;
+    tmux_agents::find(app, id).await?;
     Ok(())
 }
 async fn output(
@@ -448,6 +422,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         tmux: std::env::var("AGENTMUX_TMUX").unwrap_or("tmux".into()),
         pairing: pairing.clone(),
         managed: agents::Manager::default(),
+        relay: relay::Manager::default(),
     });
     let router = Router::new()
         .route("/v1/pair/issue", post(pairing::issue))
@@ -459,6 +434,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .route("/v1/managed/{id}/actions", post(agents::action))
         .route("/v1/settings", get(settings).put(update_settings))
         .route("/v1/sessions", get(sessions).post(create))
+        .route("/v1/sessions/{id}/chat", get(relay::snapshot))
+        .route("/v1/sessions/{id}/actions", post(relay::action))
         .route("/v1/sessions/{id}/output", get(output))
         .route("/v1/sessions/{id}/input", post(input))
         .route("/v1/sessions/{id}/interrupt", post(interrupt))
@@ -466,7 +443,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .route("/v1/file", get(download).put(upload))
         .layer(DefaultBodyLimit::max(MAX_FILE))
         .with_state(app.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:9847").await?;
+    let listener =
+        tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, api_port())).await?;
     discovery::publish(&app)?;
     if std::env::var_os("AGENTMUX_SSH_DISABLED").is_none() {
         tokio::spawn(async move {
@@ -476,7 +454,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         });
         eprintln!("Optional QR SSH on port 9848: `agentmuxd pair [Mac-IP-or-Tailscale-host]`.");
     }
-    eprintln!("agentmuxd API on 127.0.0.1:9847");
+    eprintln!("agentmuxd API on 127.0.0.1:{}", api_port());
     eprintln!(
         "In the iPhone app, choose SSH connection and sign in to this Mac to discover AgentMux automatically."
     );
@@ -520,6 +498,7 @@ mod tests {
             tmux: "tmux".into(),
             pairing: pairing::Pairing::load(tempfile::tempdir().unwrap().keep()).unwrap(),
             managed: agents::Manager::default(),
+            relay: relay::Manager::default(),
         };
         let mut headers = HeaderMap::new();
         assert!(authorize(&headers, &app).is_err());

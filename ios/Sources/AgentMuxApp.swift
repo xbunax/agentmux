@@ -8,6 +8,15 @@ struct AgentSession: Codable, Identifiable {
     let directory: String
     let command: String
     let mode: String
+    var windowID: String?
+    var windowName: String?
+    var sessionName: String?
+    var agentPID: UInt32?
+    var displayName: String { command == "claude" ? "Claude Code" : command == "codex" ? "Codex" : "Pi" }
+    enum CodingKeys: String, CodingKey {
+        case id, name, directory, command, mode
+        case windowID = "window_id", windowName = "window_name", sessionName = "session_name", agentPID = "agent_pid"
+    }
 }
 struct Agents: Codable { var codex: String; var claude: String; var pi: String }
 struct ServiceConfig: Codable {
@@ -60,22 +69,6 @@ enum Keychain {
         paired = mac
         error = nil
     }
-    func pair(_ code: PairCode) async throws {
-        guard code.version == 1, code.expires > UInt64(Date().timeIntervalSince1970),
-              code.port == 9848, code.username == "agentmux", code.ticket.count >= 32,
-              !code.host.isEmpty, code.host.count <= 253, code.hostKey.hasPrefix("ssh-ed25519 ") else {
-            throw NSError(domain: "AgentMux", code: 1, userInfo: [NSLocalizedDescriptionKey: "二维码无效或已过期，请在 Mac 重新生成"])
-        }
-        let bootstrap = PairedMac(host: code.host, port: code.port, username: code.username, hostKey: code.hostKey, credential: code.ticket, deviceID: "pending")
-        let payload = try JSONEncoder().encode(["ticket": code.ticket, "name": UIDevice.current.name])
-        let response = try await ssh.request(profile: bootstrap, path: "/v1/pair/complete", method: "POST", token: "", body: payload)
-        guard response.status == 200 else { throw NSError(domain: "AgentMux", code: response.status, userInfo: [NSLocalizedDescriptionKey: String(decoding: response.data, as: UTF8.self)]) }
-        let result = try JSONDecoder().decode([String: String].self, from: response.data)
-        guard let token = result["token"], let deviceID = result["device_id"] else { throw URLError(.cannotParseResponse) }
-        let mac = PairedMac(host: code.host, port: code.port, username: code.username, hostKey: code.hostKey, credential: token, deviceID: deviceID)
-        try Keychain.save(String(decoding: JSONEncoder().encode(mac), as: UTF8.self), account: "paired-mac")
-        await ssh.disconnect(); paired = mac
-    }
     func forget() async {
         await perform {
             if let paired { _ = try await request("/v1/devices/\(paired.deviceID)", method: "DELETE") }
@@ -108,7 +101,7 @@ enum Keychain {
     var body: some Scene {
         WindowGroup {
             TabView {
-                SessionList().tabItem { Label("会话", systemImage: "terminal") }
+                SessionList().tabItem { Label("会话", systemImage: "bubble.left.and.bubble.right") }
                 FileBrowser().tabItem { Label("文件", systemImage: "folder") }
                 SettingsView().tabItem { Label("设置", systemImage: "gearshape") }
             }
@@ -119,42 +112,76 @@ enum Keychain {
         }
     }
 }
+struct AgentWindow: Identifiable { let id: String; let panes: [AgentSession] }
 struct SessionList: View {
     @EnvironmentObject var client: Client
+    @Environment(\.scenePhase) var phase
     @State private var sessions: [AgentSession] = []
     @State private var creating = false
+    private var windows: [AgentWindow] {
+        Dictionary(grouping: sessions.filter { $0.mode == "tmux" }, by: { $0.windowID ?? $0.id })
+            .map { AgentWindow(id: $0.key, panes: $0.value) }
+            .sorted { ($0.panes.first?.name ?? "") < ($1.panes.first?.name ?? "") }
+    }
     var body: some View {
         NavigationStack {
             List {
                 Section { PairingStatus() }
                 if sessions.isEmpty, client.paired != nil {
-                    ContentUnavailableView("暂无会话", systemImage: "terminal", description: Text("下拉刷新，或创建 Agent"))
+                    ContentUnavailableView("暂无运行中的 Agent", systemImage: "bubble.left.and.bubble.right", description: Text("在 Mac 的 tmux 窗口中启动 Codex、Claude Code 或 Pi，或点 + 开始新对话。"))
                 }
-                ForEach(sessions) { session in
-                    NavigationLink {
-                        if session.mode == "structured" { ChatView(session: session) }
-                        else { TerminalView(session: session) }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Label(session.command, systemImage: "terminal")
-                            Text(session.mode == "structured" ? "结构化聊天" : "tmux 终端兼容").font(.caption)
-                            Text(session.directory).font(.caption2).foregroundStyle(.secondary)
+                if !windows.isEmpty {
+                    Section("Mac 上的 Agent") {
+                        ForEach(windows) { window in
+                            let panes = window.panes
+                            if let first = panes.first {
+                                NavigationLink {
+                                    if panes.count == 1 { ChatView(session: first) }
+                                    else {
+                                        List(Array(panes.enumerated()), id: \.element.id) { index, pane in
+                                            NavigationLink("\(pane.displayName) · \(index + 1)") { ChatView(session: pane) }
+                                        }.navigationTitle(first.windowName ?? first.name)
+                                    }
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text(first.windowName ?? first.name).font(.headline)
+                                        Text(panes.map(\.displayName).joined(separator: " · ")).font(.subheadline)
+                                        Text((first.sessionName ?? "") + " · " + first.directory).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                    }.padding(.vertical, 4)
+                                }
+                            }
+                        }
+                    }
+                }
+                let managed = sessions.filter { $0.mode == "structured" }
+                if !managed.isEmpty {
+                    Section("App 中的对话") {
+                        ForEach(managed) { session in
+                            NavigationLink { ChatView(session: session) } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Label(session.displayName, systemImage: "sparkles").font(.headline)
+                                    Text(session.directory).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                }.padding(.vertical, 4)
+                            }
                         }
                     }
                 }
             }
             .navigationTitle("AgentMux")
-            .toolbar { Button { creating = true } label: { Image(systemName: "plus") }; Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") } }
+            .toolbar { Button { creating = true } label: { Image(systemName: "plus") }.disabled(client.paired == nil) }
             .refreshable { await refresh() }
-            .task(id: client.paired?.deviceID) { if client.paired != nil { await refresh() } }
+            .task(id: "\(client.paired?.deviceID ?? "")-\(phase)") {
+                guard phase == .active, client.paired != nil else { sessions = []; return }
+                while !Task.isCancelled { await refresh(); try? await Task.sleep(for: .seconds(5)) }
+            }
             .sheet(isPresented: $creating, onDismiss: { Task { await refresh() } }) { CreateSession() }
         }
     }
     func refresh() async {
         await client.perform {
             let managed: [AgentSession] = try await client.get("/v1/managed")
-            let terminal: [AgentSession] = try await client.get("/v1/sessions")
-            sessions = managed + terminal
+            let discovered: [AgentSession] = try await client.get("/v1/sessions")
+            sessions = managed + discovered
         }
     }
 }
@@ -162,20 +189,18 @@ struct CreateSession: View {
     @EnvironmentObject var client: Client
     @Environment(\.dismiss) var dismiss
     @State private var agent = "codex"
-    @State private var structured = true
     @State private var directory = ""
     @State private var busy = false
     var body: some View {
         NavigationStack {
             Form {
                 Picker("Agent", selection: $agent) { Text("Codex").tag("codex"); Text("Claude Code").tag("claude"); Text("Pi").tag("pi") }
-                Toggle("结构化聊天", isOn: $structured)
                 TextField("Mac 上的绝对目录", text: $directory).textInputAutocapitalization(.never).autocorrectionDisabled()
                 Text("目录必须已存在且处于授权范围。使用 Mac 已配置的 Agent 登录状态。").font(.caption)
                 Button("创建") {
                     busy = true
                     Task {
-                        await client.perform { try await client.send(structured ? "/v1/managed" : "/v1/sessions", value: ["agent": agent, "directory": directory]); dismiss() }
+                        await client.perform { try await client.send("/v1/managed", value: ["agent": agent, "directory": directory]); dismiss() }
                         busy = false
                     }
                 }.disabled(busy || directory.isEmpty)
@@ -185,46 +210,6 @@ struct CreateSession: View {
             .task { await client.perform { let config: ServiceConfig = try await client.get("/v1/settings"); directory = config.defaultDirectory } }
         }
     }
-}
-struct TerminalView: View {
-    @EnvironmentObject var client: Client
-    @Environment(\.scenePhase) var scenePhase
-    let session: AgentSession
-    @State private var output = ""
-    @State private var message = ""
-    @State private var busy = false
-    @State private var confirmInterrupt = false
-    var body: some View {
-        VStack {
-            Text("终端快照 · 非结构化聊天").font(.caption).foregroundStyle(.secondary)
-            ScrollView([.vertical, .horizontal]) {
-                Text(output.isEmpty ? "等待输出…" : output).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding()
-            }
-            HStack {
-                TextField("消息或 /命令", text: $message, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(1...5)
-                Button("发送") {
-                    let text = message; busy = true
-                    Task {
-                        await client.perform { try await client.send("/v1/sessions/\(session.id)/input", value: ["text": text]); message = ""; try await refresh() }
-                        busy = false
-                    }
-                }.disabled(message.isEmpty || busy)
-            }.padding()
-        }
-        .navigationTitle(session.command)
-        .toolbar { Button("中断", role: .destructive) { confirmInterrupt = true } }
-        .confirmationDialog("发送 Ctrl-C？", isPresented: $confirmInterrupt) {
-            Button("中断当前任务", role: .destructive) { Task { await client.perform { _ = try await client.request("/v1/sessions/\(session.id)/interrupt", method: "POST") } } }
-        }
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
-            while !Task.isCancelled {
-                do { try await refresh(); try await Task.sleep(for: .seconds(2)) }
-                catch { if !Task.isCancelled { client.error = error.localizedDescription }; break }
-            }
-        }
-    }
-    func refresh() async throws { output = String(decoding: try await client.request("/v1/sessions/\(session.id)/output"), as: UTF8.self) }
 }
 struct SettingsView: View {
     @EnvironmentObject var client: Client

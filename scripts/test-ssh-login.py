@@ -23,6 +23,9 @@ import paramiko
 
 logging.getLogger("paramiko").setLevel(logging.CRITICAL)
 repo = Path(__file__).resolve().parent.parent
+with socket.socket() as api_probe:
+    api_probe.bind(("127.0.0.1", 0))
+    api_port = api_probe.getsockname()[1]
 if os.environ.get("AGENTMUX_SSH_TRACE"):
     paramiko.util.log_to_file(str(repo / "build/ssh-login-server.log"), level=logging.DEBUG)
     logging.getLogger("paramiko").setLevel(logging.DEBUG)
@@ -40,7 +43,7 @@ def trace(message):
 def bridge(channel):
     try:
         trace("API bridge started")
-        with socket.create_connection(("127.0.0.1", 9847), timeout=5) as remote:
+        with socket.create_connection(("127.0.0.1", api_port), timeout=5) as remote:
             remote.settimeout(None)
             def responses():
                 try:
@@ -86,7 +89,7 @@ class SSHServer(paramiko.ServerInterface):
         return paramiko.OPEN_SUCCEEDED if kind == "session" else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
     def check_channel_direct_tcpip_request(self, chanid, origin, destination):
-        if destination != ("127.0.0.1", 9847):
+        if destination != ("127.0.0.1", api_port):
             return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
         self.forwarded.add(chanid)
         return paramiko.OPEN_SUCCEEDED
@@ -111,7 +114,7 @@ with tempfile.TemporaryDirectory(prefix="agentmux-ssh-login-") as temporary:
     env = os.environ.copy()
     env.pop("AGENTMUX_CONFIG", None)
     env.pop("AGENTMUX_TOKEN", None)
-    env.update(AGENTMUX_STATE=str(root / "state"), AGENTMUX_DISCOVERY=str(root / "service.json"), AGENTMUX_SSH_DISABLED="1")
+    env.update(AGENTMUX_API_PORT=str(api_port), AGENTMUX_STATE=str(root / "state"), AGENTMUX_DISCOVERY=str(root / "service.json"), AGENTMUX_SSH_DISABLED="1")
     key_path = root / "id_ed25519"
     subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "test-passphrase", "-f", str(key_path)], check=True)
     private_key = paramiko.Ed25519Key.from_private_key_file(str(key_path), password="test-passphrase")
@@ -173,7 +176,7 @@ with tempfile.TemporaryDirectory(prefix="agentmux-ssh-login-") as temporary:
             assert stat.S_IMODE((root / "service.json").stat().st_mode) == 0o600
             assert (root / "agentmux.json").is_file()
             # The enrollment endpoint cannot be used by an unauthenticated local client.
-            request = urllib.request.Request("http://127.0.0.1:9847/v1/devices", data=b'{"name":"unauthorized"}', headers={"Content-Type": "application/json"})
+            request = urllib.request.Request(f"http://127.0.0.1:{api_port}/v1/devices", data=b'{"name":"unauthorized"}', headers={"Content-Type": "application/json"})
             try:
                 urllib.request.urlopen(request)
                 raise AssertionError("Unauthenticated enrollment was accepted")

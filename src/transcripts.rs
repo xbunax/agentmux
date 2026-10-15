@@ -349,8 +349,13 @@ pub fn parse(provider: &str, records: &[Value]) -> Vec<Message> {
                 continue;
             }
             let text = texts(content);
-            // Claude streaming chunks with the same message ID replace the previous text.
-            let id = message["id"].as_str().map(String::from).unwrap_or(id);
+            // Claude may persist distinct content blocks with the same API message ID.
+            // The transcript UUID identifies the actual record; only merge message-ID-only snapshots.
+            let id = record["uuid"]
+                .as_str()
+                .or(message["id"].as_str())
+                .map(String::from)
+                .unwrap_or(id);
             if !text.is_empty() {
                 put(
                     &mut messages,
@@ -432,6 +437,17 @@ mod tests {
             messages.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(),
             vec!["first", "current"]
         );
+    }
+    #[test]
+    fn claude_preserves_distinct_content_records_with_the_same_api_message_id() {
+        let records = vec![
+            json!({"type":"assistant","uuid":"part-a","message":{"id":"same-message","role":"assistant","content":[{"type":"text","text":"First block"}]}}),
+            json!({"type":"assistant","uuid":"part-b","message":{"id":"same-message","role":"assistant","content":[{"type":"text","text":"Second block"}]}}),
+        ];
+        let messages = parse("claude", &records);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].text, "First block");
+        assert_eq!(messages[1].text, "Second block");
     }
     #[test]
     fn codex_uses_response_items_once_and_keeps_tool_details() {

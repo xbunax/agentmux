@@ -6,7 +6,7 @@ The iOS camera/photo scanner and terminal screen have been removed. SSH is the c
 
 | Check | Result |
 | --- | --- |
-| Rust unit tests | 21 passed: configuration/authentication/confinement, process-tree identification, provider transcript parsing, Pi branch selection, incomplete JSONL, editor readiness, control-character rejection, Codex permission/question response schemas, and tool result merging |
+| Rust unit tests | 22 passed: configuration/authentication/confinement, process-tree identification, provider transcript parsing, Pi branch selection, incomplete JSONL, editor readiness, control-character rejection, Codex permission/question response schemas, and tool result merging |
 | Formatting and Clippy | Passed, warnings denied |
 | Isolated real tmux test | Passed across multiple sessions, renamed windows, split panes, ordinary-window filtering, discovery outside file roots, explicit history selection, PID binding, bracketed message delivery, deduplication, Mac draft rejection, and exited-process rejection |
 | Pi extension fixture | Actual TypeScript extension passed authenticated HTTP, private manifest permissions, branch/streaming snapshots, draft/dialog rejection, deduplication, abort, models, and PID validation |

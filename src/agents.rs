@@ -355,8 +355,9 @@ impl Managed {
                     let answer = content(&value["message"]["content"]);
                     state.messages.retain(|m| m.id != "stream");
                     if !answer.is_empty() {
-                        let id = value["message"]["id"]
+                        let id = value["uuid"]
                             .as_str()
+                            .or(value["message"]["id"].as_str())
                             .map(String::from)
                             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                         upsert(&mut state, &id, "assistant", answer, false);

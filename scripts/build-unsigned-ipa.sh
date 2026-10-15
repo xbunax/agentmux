@@ -12,5 +12,5 @@ mkdir -p "$STAGING/Payload"
 cp -R "$ROOT/build/direct/Release-iphoneos/AgentMux.app" "$STAGING/Payload/"
 rm -f "$ROOT/dist/AgentMux-unsigned.ipa"
 (cd "$STAGING" && /usr/bin/zip -qry "$ROOT/dist/AgentMux-unsigned.ipa" Payload)
-shasum -a 256 "$ROOT/dist/AgentMux-unsigned.ipa" > "$ROOT/dist/AgentMux-unsigned.ipa.sha256"
+(cd "$ROOT/dist" && shasum -a 256 AgentMux-unsigned.ipa > AgentMux-unsigned.ipa.sha256)
 printf '\nUnsigned IPA: %s\n' "$ROOT/dist/AgentMux-unsigned.ipa"

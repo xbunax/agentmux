@@ -1,0 +1,73 @@
+name: Build iOS app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ios.yml'
+      - 'ios/**'
+      - 'scripts/build-unsigned-ipa.sh'
+  pull_request:
+    paths:
+      - '.github/workflows/ios.yml'
+      - 'ios/**'
+      - 'scripts/build-unsigned-ipa.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Unsigned iOS IPA
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up build tools
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Build unsigned IPA
+        run: |
+          mkdir -p build
+          sh scripts/build-unsigned-ipa.sh 2>&1 | tee build/ios-build.log
+          (cd dist && shasum -a 256 -c AgentMux-unsigned.ipa.sha256)
+
+      - name: Upload IPA and checksum
+        uses: actions/upload-artifact@v6
+        with:
+          name: AgentMux-unsigned-${{ github.run_number }}
+          path: |
+            dist/AgentMux-unsigned.ipa
+            dist/AgentMux-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ios-build-log-${{ github.run_number }}
+          path: build/ios-build.log
+          if-no-files-found: ignore
+          retention-days: 14

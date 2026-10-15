@@ -57,6 +57,8 @@ sh scripts/build-unsigned-ipa.sh
 
 Outputs `dist/AgentMux-unsigned.ipa` and SHA-256 sidecar. This is an iphoneos/arm64 Release app with signing disabled. A normal iPhone requires re-signing with your certificate/provisioning workflow. The generated unsigned IPA contains no signing identity or developer account.
 
+GitHub Actions runs the same build for iOS changes pushed to `main` and pull requests. To build manually, open [Build iOS app](https://github.com/xbunax/agentmux/actions/workflows/ios.yml), select **Run workflow**, and choose a branch. Download `AgentMux-unsigned-<run number>` from the completed run's **Artifacts** section; it contains the IPA and checksum. Extract both files into one directory and run `shasum -a 256 -c AgentMux-unsigned.ipa.sha256` to verify the download. Artifacts and build logs are retained for 14 days. No Apple signing secrets are required.
+
 ## Verification commands
 
 ```sh

@@ -1,5 +1,18 @@
 # Verification record
 
+## Disabled send buttons in real manual sessions — 2026-10-15
+
+Reproduced against the user's original `test` session using GET requests only: Codex was ready, while Claude Code and Pi were incorrectly blocked. Claude had a hidden hardware cursor in its bordered, empty `❯` editor. Pi's Vim extension appended `INSERT` to the lower editor border.
+
+The readiness parser now accepts those layouts without accepting existing drafts, recognized selection menus or Vim NORMAL/VISUAL screens. No iOS change is needed: the send button follows the daemon's message capability.
+
+- All five original Agent panes, including the real Claude and Pi panes, reported input-ready after the fix using an isolated daemon. No text was sent to those user processes.
+- 29 Rust unit tests and Clippy passed. Added actual-layout regressions for hidden Claude cursors/nonbreaking spaces and Pi's styled Vim INSERT border, including rejection cases.
+- The three-provider manual tmux fixture now reproduces those layouts; message delivery/deduplication, Mac draft rejection, menu selection/confirmation, explicit approval and cancellation passed with original process PIDs preserved.
+- The installed Pi's default TUI still passed the isolated offline `/model` navigation/confirmation test. This does not establish real Claude/Pi model-response correctness or iPhone end-to-end correctness.
+
+Rebuild/restart only the Mac daemon to load this fix. Existing tmux Agent processes do not need restarting, and the current iOS app does not need reinstalling.
+
 ## Existing manual sessions and plugins — 2026-10-15, version 0.4
 
 History binding and dim-placeholder false negatives previously prevented some manually started Agents from receiving input. History is now optional for control. iOS adds inline slash suggestions, explicit selection/confirmation cards and provider plugin sessions.

@@ -90,13 +90,19 @@ impl Frame {
         let Some(line) = self.lines.get(self.cursor_y) else {
             return false;
         };
+        let border = |line: &Line| {
+            let s = line.text.trim();
+            s.starts_with('─') && s.ends_with('─') && s.chars().filter(|c| *c == '─').count() >= 8
+        };
         let trimmed = line.text.trim_start();
         if provider == "pi" {
-            let border = |line: &Line| {
+            let lower_border = |line: &Line| {
                 let s = line.text.trim();
-                s.starts_with('─')
-                    && s.ends_with('─')
-                    && s.chars().filter(|c| *c == '─').count() >= 8
+                // pi-lens/Vim appends its mode to the lower editor border.
+                // Only INSERT is writable; NORMAL/VISUAL are not text editors.
+                let suffix = s.trim_start_matches('─').trim();
+                (border(line) && !s.contains("NORMAL") && !s.contains("VISUAL"))
+                    || (s.chars().take_while(|c| *c == '─').count() >= 8 && suffix == "INSERT")
             };
             let empty = line.text.trim().is_empty()
                 || (self.cursor_x == 0
@@ -113,15 +119,34 @@ impl Frame {
                 && empty
                 && self.cursor_y > 0
                 && self.lines.get(self.cursor_y - 1).is_some_and(border)
-                && self.lines.get(self.cursor_y + 1).is_some_and(border);
+                && self.lines.get(self.cursor_y + 1).is_some_and(lower_border)
+                && self.menu("pi", 0).is_none();
         }
         let prompt = match provider {
             "codex" => '›',
             "claude" => '❯',
             _ => return false,
         };
-        if !self.cursor_visible || !trimmed.starts_with(prompt) {
+        if !trimmed.starts_with(prompt) {
             return false;
+        }
+        let bordered_claude_editor = provider == "claude"
+            && self.cursor_y > 0
+            && self.cursor_x == 2
+            && self.lines.get(self.cursor_y - 1).is_some_and(border)
+            && self.lines.get(self.cursor_y + 1).is_some_and(border);
+        if !self.cursor_visible && !bordered_claude_editor {
+            return false;
+        }
+        if provider == "claude" {
+            let mut footer = self.lines.iter().skip(self.cursor_y + 2).take(4);
+            if footer.any(|line| {
+                let text = line.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                text.contains("-- NORMAL --") || text.contains("-- VISUAL --")
+            }) || self.menu("claude", 0).is_some()
+            {
+                return false;
+            }
         }
         if trimmed.trim() == prompt.to_string() {
             return true;
@@ -405,6 +430,34 @@ mod tests {
             )
             .editor_ready("pi")
         );
+    }
+    #[test]
+    fn claude_hidden_cursor_in_bordered_insert_editor_is_ready() {
+        let raw = "\u{1b}[38;5;244m────────────────────\n\u{1b}[39m❯\u{a0}\n\u{1b}[38;5;244m────────────────────\nstatus\n-- INSERT -- auto mode on";
+        assert!(Frame::parse(raw, 2, 1, false).editor_ready("claude"));
+        assert!(
+            !Frame::parse(&raw.replace("INSERT", "NORMAL"), 2, 1, false).editor_ready("claude")
+        );
+        assert!(!Frame::parse(&raw.replace("INSERT", "VISUAL"), 2, 1, true).editor_ready("claude"));
+        assert!(
+            !Frame::parse(&raw.replace("❯\u{a0}", "❯ existing draft"), 2, 1, false)
+                .editor_ready("claude")
+        );
+        assert!(!Frame::parse("❯ ", 2, 0, false).editor_ready("claude"));
+        assert!(!Frame::parse(raw, 0, 1, false).editor_ready("claude"));
+        let menu = format!("{raw}\nChoose\n❯ 1. Allow\n  2. Deny");
+        assert!(!Frame::parse(&menu, 2, 1, false).editor_ready("claude"));
+    }
+    #[test]
+    fn pi_vim_mode_border_allows_insert_without_allowing_normal_or_drafts() {
+        let raw = "\u{1b}[38;2;184;187;38m────────────────────\n\n────────────\u{1b}[7m\u{1b}[38;2;80;73;69m INSERT\n\u{1b}[0mstatus";
+        assert!(Frame::parse(raw, 0, 1, true).editor_ready("pi"));
+        for mode in ["NORMAL", "VISUAL", "REPLACE", "INSERT extra text"] {
+            assert!(!Frame::parse(&raw.replace("INSERT", mode), 0, 1, true).editor_ready("pi"));
+        }
+        assert!(!Frame::parse(&raw.replace("\n\n", "\ndraft\n"), 0, 1, true).editor_ready("pi"));
+        assert!(!Frame::parse(raw, 0, 1, false).editor_ready("pi"));
+        assert!(!Frame::parse(raw, 0, 2, true).editor_ready("pi"));
     }
     #[test]
     fn menu_ids_change_with_the_target_and_selection() {

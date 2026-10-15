@@ -26,7 +26,7 @@ Every TUI action checks the live Agent PID. A plugin is linked to a pane only wh
 
 ## Editor and menu forwarding
 
-Sending requires a recognizable empty editor. Dim Codex/Claude placeholders and Pi's default software cursor are supported; real Mac drafts are rejected. Text uses bracketed paste, rejects terminal control characters and requires a deduplicated request ID. Escape requests cancellation without sending Ctrl-C to a shell.
+Sending requires a recognizable empty editor. Dim Codex/Claude placeholders, Claude's hidden cursor in its bordered editor, Pi's default software cursor and Pi's Vim INSERT border are supported; real Mac drafts and recognized Vim non-insert modes are rejected. Text uses bracketed paste, rejects terminal control characters and requires a deduplicated request ID. Escape requests cancellation without sending Ctrl-C to a shell.
 
 Recognized numbered Codex/Claude lists and bordered Pi arrow lists become choice cards. Selection sends arrows only. Confirmation requires a separate tap and a fresh hash covering the provider, PID, context, options and current selection. A changed menu rejects stale confirmation. Unrecognized dialogs refuse input instead of guessing.
 

@@ -31,7 +31,10 @@ def render():
     elif mode=='busy': text='\x1b[2J\x1b[H\x1b[?25lWorking · Esc to cancel'
     elif provider=='pi':
         border='────────────────────────────────────────'
-        text='\x1b[2J\x1b[H\x1b[?25h'+border+'\r\n'+(draft if draft else '\x1b[2mType a message\x1b[0m')+'\r\n'+border+'\x1b[2;'+str(len(draft)+1)+'H'
+        text='\x1b[2J\x1b[H\x1b[?25h'+border+'\r\n'+(draft if draft else '\x1b[2mType a message\x1b[0m')+'\r\n'+border[:-8]+'\x1b[7m INSERT\x1b[0m\x1b[2;'+str(len(draft)+1)+'H'
+    elif provider=='claude':
+        border='────────────────────────────────────────'
+        text='\x1b[2J\x1b[H\x1b[?25l'+border+'\r\n❯\u00a0'+(draft if draft else '\x1b[2mAsk anything\x1b[0m')+'\r\n'+border+'\r\n-- INSERT --\x1b[2;'+str(len(draft)+3)+'H'
     else:
         prompt='›' if provider=='codex' else '❯'
         text='\x1b[2J\x1b[H\x1b[?25h'+prompt+' '+(draft if draft else '\x1b[2mAsk anything\x1b[0m')+'\x1b['+str(len(draft)+3)+'G'

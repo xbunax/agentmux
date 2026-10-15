@@ -7,46 +7,144 @@ import SwiftTerm
 private final class ReadOnlyTerminal: TerminalView {
     override var canBecomeFirstResponder: Bool { false }
 }
+private final class TerminalViewport: UIScrollView {
+    var resized: ((CGSize) -> Void)?
+    private var previousSize = CGSize.zero
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if bounds.size != previousSize {
+            previousSize = bounds.size
+            resized?(bounds.size)
+        }
+    }
+}
 struct TerminalSurface: UIViewRepresentable {
+    @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceTransparency) private var solid
     let model: TerminalSessionModel
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    var onBrowse: () -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(model: model, onBrowse: onBrowse) }
     func makeUIView(context: Context) -> UIScrollView {
-        let scroll = UIScrollView()
-        scroll.backgroundColor = .systemBackground
+        let scroll = TerminalViewport()
+        scroll.backgroundColor = .clear
+        scroll.alwaysBounceVertical = true
         scroll.minimumZoomScale = 0.5; scroll.maximumZoomScale = 2
+        scroll.contentInsetAdjustmentBehavior = .never
         let terminal = ReadOnlyTerminal(frame: CGRect(x: 0, y: 0, width: 640, height: 420), font: .monospacedSystemFont(ofSize: 13, weight: .regular))
         terminal.terminalDelegate = context.coordinator
         terminal.isUserInteractionEnabled = false
-        terminal.nativeBackgroundColor = UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.035, green: 0.045, blue: 0.06, alpha: 1) : .white }
-        terminal.nativeForegroundColor = .label
         scroll.addSubview(terminal)
         context.coordinator.terminal = terminal
+        context.coordinator.scroll = scroll
         scroll.delegate = context.coordinator
-        model.bindOutput { [weak terminal, weak scroll] data, cols, rows in
-            guard let terminal, let scroll else { return }
+        scroll.resized = { [weak coordinator = context.coordinator] size in
+            coordinator?.reportViewport(size)
+        }
+        model.bindOutput { [weak coordinator = context.coordinator] data, cols, rows in
+            guard let coordinator, let terminal = coordinator.terminal, let scroll = coordinator.scroll else { return }
+            let offset = scroll.contentOffset
             if let cols, let rows {
+                let scale = scroll.zoomScale
+                scroll.setZoomScale(1, animated: false)
                 terminal.resize(cols: cols, rows: rows)
                 terminal.frame = terminal.getOptimalFrameSize()
-                scroll.contentSize = terminal.frame.size
                 terminal.layoutIfNeeded()
-                scroll.setContentOffset(.zero, animated: false)
+                scroll.contentSize = terminal.frame.size
+                scroll.setZoomScale(scale, animated: false)
+                scroll.contentOffset = offset
             }
             terminal.feed(byteArray: Array(data)[...])
+            if coordinator.followCursor { coordinator.showCursor() }
+            coordinator.reportViewport(scroll.bounds.size)
         }
-        model.browse = { [weak scroll] dx, dy in
-            guard let scroll else { return }
+        model.browse = { [weak coordinator = context.coordinator] dx, dy in
+            guard let coordinator, let scroll = coordinator.scroll else { return false }
+            coordinator.followCursor = false
             let x = min(max(0, scroll.contentOffset.x + dx), max(0, scroll.contentSize.width - scroll.bounds.width))
             let y = min(max(0, scroll.contentOffset.y + dy), max(0, scroll.contentSize.height - scroll.bounds.height))
+            let moved = abs(x - scroll.contentOffset.x) + abs(y - scroll.contentOffset.y) > 0.5
             scroll.setContentOffset(CGPoint(x: x, y: y), animated: false)
+            return moved
         }
-        scroll.accessibilityLabel = "原始终端现场，可双指缩放或在滑控浏览模式移动视口"
+        model.returnToCursor = { [weak coordinator = context.coordinator] in
+            coordinator?.followCursor = true; coordinator?.showCursor()
+        }
+        scroll.accessibilityLabel = "实时终端，可滚动浏览或双指缩放"
+        applyTheme(terminal)
+        context.coordinator.themeKey = themeKey
         return scroll
     }
-    func updateUIView(_ uiView: UIScrollView, context: Context) {}
+    func updateUIView(_ uiView: UIScrollView, context: Context) {
+        context.coordinator.onBrowse = onBrowse
+        if context.coordinator.themeKey != themeKey, let terminal = context.coordinator.terminal {
+            applyTheme(terminal); context.coordinator.themeKey = themeKey
+        }
+    }
+    private var themeKey: String { "\(theme.palette.rawValue)-\(scheme)-\(solid)" }
+    private func applyTheme(_ terminal: TerminalView) {
+        let colors = theme.palette.colors(dark: scheme == .dark)
+        func native(_ value: UInt32, alpha: CGFloat = 1) -> UIColor {
+            UIColor(red: CGFloat((value >> 16) & 255) / 255, green: CGFloat((value >> 8) & 255) / 255, blue: CGFloat(value & 255) / 255, alpha: alpha)
+        }
+        terminal.isOpaque = solid
+        terminal.nativeBackgroundColor = native(colors[0], alpha: solid ? 1 : 0.78)
+        terminal.nativeForegroundColor = native(colors[2])
+        terminal.caretColor = native(colors[4])
+        terminal.selectedTextBackgroundColor = native(colors[4], alpha: 0.3)
+        terminal.selectedTextForegroundColor = native(colors[2])
+        terminal.installColors(theme.palette.ansi(dark: scheme == .dark).map { value in
+            SwiftTerm.Color(red8: UInt16((value >> 16) & 255), green8: UInt16((value >> 8) & 255), blue8: UInt16(value & 255))
+        })
+    }
     final class Coordinator: NSObject, TerminalViewDelegate, UIScrollViewDelegate {
         weak var terminal: TerminalView?
+        weak var scroll: UIScrollView?
+        let model: TerminalSessionModel
+        var onBrowse: () -> Void
+        var followCursor = true
+        var themeKey = ""
+        private var lastViewport = CGSize.zero
+        private var dragOrigin = CGPoint.zero
+        private var didBrowse = false
+        init(model: TerminalSessionModel, onBrowse: @escaping () -> Void) { self.model = model; self.onBrowse = onBrowse }
+        func reportViewport(_ size: CGSize) {
+            guard size.width > 0, size.height > 0, size != lastViewport, let terminal else { return }
+            lastViewport = size
+            let frame = terminal.getOptimalFrameSize()
+            let grid = terminal.getTerminal()
+            let cellWidth = frame.width / CGFloat(max(1, grid.cols))
+            let cellHeight = frame.height / CGFloat(max(1, grid.rows))
+            guard cellWidth > 0, cellHeight > 0 else { return }
+            let cols = Int(size.width / cellWidth), rows = Int(size.height / cellHeight)
+            DispatchQueue.main.async { [weak self] in
+                self?.model.setViewport(cols: cols, rows: rows)
+                if self?.followCursor == true { self?.showCursor() }
+            }
+        }
+        func showCursor() {
+            guard let terminal, let scroll else { return }
+            let grid = terminal.getTerminal(), frame = terminal.getOptimalFrameSize()
+            let cursor = grid.getCursorLocation()
+            let w = frame.width / CGFloat(max(1, grid.cols)), h = frame.height / CGFloat(max(1, grid.rows))
+            let scale = scroll.zoomScale
+            scroll.scrollRectToVisible(CGRect(x: CGFloat(cursor.x) * w * scale, y: CGFloat(cursor.y) * h * scale, width: w * scale, height: h * scale), animated: false)
+        }
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { terminal }
-        func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {} // Never resize Mac.
+        func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { followCursor = false; dragOrigin = scrollView.contentOffset; didBrowse = false }
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            if scrollView.isDragging && abs(scrollView.contentOffset.x - dragOrigin.x) + abs(scrollView.contentOffset.y - dragOrigin.y) > 8 { didBrowse = true }
+        }
+        func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+            if !decelerate { finishBrowse(scrollView) }
+        }
+        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { finishBrowse(scrollView) }
+        private func finishBrowse(_ scrollView: UIScrollView) {
+            if didBrowse { didBrowse = false; onBrowse() }
+        }
+        func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) { followCursor = false }
+        func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) { onBrowse() }
+        func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {} // Only viewport layout requests remote size changes.
         func setTerminalTitle(source: TerminalView, title: String) {}
         func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
         func send(source: TerminalView, data: ArraySlice<UInt8>) {} // Not a user action.
@@ -64,6 +162,7 @@ struct TerminalSurface: UIViewRepresentable {
 /// A sentinel lets deleteBackward reach the remote editor when local storage is empty.
 struct TerminalKeyboard: UIViewRepresentable {
     var enabled: Bool
+    var keepKeyboard = false
     @Binding var focused: Bool
     let commit: (String) -> Void
     let key: (String) -> Void
@@ -86,9 +185,10 @@ struct TerminalKeyboard: UIViewRepresentable {
     }
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.parent = self; context.coordinator.enabled = enabled && focused
-        view.isEditable = enabled
-        if enabled && focused && !view.isFirstResponder { view.becomeFirstResponder() }
-        if (!enabled || !focused) && view.isFirstResponder { view.resignFirstResponder() }
+        let acceptsFocus = enabled || keepKeyboard
+        view.isEditable = acceptsFocus
+        if acceptsFocus && focused && !view.isFirstResponder { view.becomeFirstResponder() }
+        if (!acceptsFocus || !focused) && view.isFirstResponder { view.resignFirstResponder() }
     }
     static func dismantleUIView(_ view: UITextView, coordinator: Coordinator) {
         coordinator.enabled = false; view.resignFirstResponder(); view.delegate = nil

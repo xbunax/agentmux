@@ -27,7 +27,7 @@ cargo build --release
 ./target/release/agentmuxd
 ```
 
-On first launch, the daemon creates `agentmux.json` with private permissions, authorizes the current directory, and detects Codex / Claude / Pi executables on `PATH`. Missing agents retain their command names and can be installed later. Existing configuration is preserved; malformed configuration reports an error. To expose another project, launch the binary from that project's directory. You can edit `agentmux.json` locally to authorize additional existing directories or customize executable paths, then restart the daemon. `agentmux.example.json` remains available as a reference.
+On first launch, the daemon creates `~/.config/agentmux/agentmux.json` with private permissions, authorizes the current directory, and detects Codex / Claude / Pi executables on `PATH`. Missing agents retain their command names and can be installed later. Existing configuration is preserved; malformed configuration reports an error. The same configuration is reused when launched from another directory. You can edit `~/.config/agentmux/agentmux.json` locally to authorize additional existing directories or customize executable paths, then restart the daemon. `agentmux.example.json` remains available as a reference.
 
 Enable **System Settings → General → Sharing → Remote Login** on the Mac. In the iOS app, choose **通过 SSH 连接 Mac**, enter the Mac hostname/IP, SSH port (default 22), username, and password or private key. Verify the displayed SSH fingerprint, then choose **信任主机并连接**. The app discovers the running daemon and connects automatically through the same SSH connection; no `agentmuxd pair` command or open port 9848 is needed for this mode. SSH command execution and local TCP forwarding must be allowed for the account.
 
@@ -37,9 +37,15 @@ The daemon publishes a private discovery file at `~/Library/Application Support/
 
 The app searches every session on the configured tmux server. Recognized Agents appear automatically; **+ → 选择任意 tmux pane** exposes unknown programs and shells for explicit target selection. No replacement process is started. Discovery is independent of file roots; files and new-session creation remain restricted to approved roots.
 
-Opening a tmux session shows its live terminal through SwiftTerm. The bottom workbench switches between **文本 / Micro / 滑控** without leaving the screen. Text has a local draft editor and a separate direct-terminal keyboard. Native **发送** is available only when a linked adapter advertises same-session message support; otherwise **填入终端** pastes without clearing existing text or appending Enter. Enter remains a separately labeled key. Multiline paste is refused if tmux cannot positively report bracketed-paste mode, and still requires confirmation when supported.
+Selecting a tmux session connects to its existing process and shows its live terminal through SwiftTerm; list titles use the working-directory name. The bottom workbench switches between **文本 / Micro / 滑控** without leaving the screen. Text has a local draft editor and a separate direct-terminal keyboard. **填入终端** appends the local draft immediately, retains a copy, and adds no Enter. Native provider send remains in the enhanced chat screen. Enter remains a separately labeled key. Multiline paste requires tmux to report bracketed-paste mode; tapping Fill Terminal or pasting into direct input needs no second confirmation dialog.
 
-Micro provides explicit navigation/Enter/Esc/Tab/Space and up to six configurable session shortcuts. Glide explicitly separates local viewport browsing from remote arrow keys. New connections require target confirmation; stale streams, foreground-process changes, external resize and uncertain writes stop input instead of replaying. Mac keyboard input is not locked out. See [implementation and state design](docs/TERMINAL-WORKBENCH.md) and [verification/limitations](docs/TERMINAL-VERIFICATION.md).
+Micro provides explicit navigation/Enter/Esc/Tab/Space and up to six configurable session shortcuts. Glide explicitly separates local viewport browsing from remote arrow keys. Selecting a session connects immediately; stale streams, foreground-process changes, external resize and uncertain writes stop input instead of replaying. Mac keyboard input is not locked out. See [implementation and state design](docs/TERMINAL-WORKBENCH.md) and [verification/limitations](docs/TERMINAL-VERIFICATION.md).
+
+The whole app shares Liquid Glass surfaces (iOS 26; Material on older systems) and five palettes under **设置 → 外观**: AgentMux, Gruvbox, Catppuccin, Nord and Solarized. Appearance and palette are independent; switching either preserves connections and drafts. Nord light and some semantic colors are adaptations for readability.
+
+The workbench occupies its own space below the terminal. Hide it explicitly or enable **浏览时自动隐藏控制栏**; the bottom **显示控制栏** button restores the last mode. Glide offers optional haptics, and Micro's **听写输入** opens a local draft and the system keyboard: tap the keyboard microphone, then review before sending. AgentMux does not record audio or submit dictation automatically.
+
+**终端尺寸跟随手机** is off by default. When on, the terminal's available viewport (including keyboard and control-panel changes) sets the target tmux pane size, expanding the window to reserve space for sibling panes. Split panes retain their membership. Closing/disabling restores the original layout and size policy unless the Mac changed them in the meantime. Only one connection can own a window's size. This requires the updated daemon; older daemons retain fixed-grid browsing. Keep the Mac pane unzoomed while using size following.
 
 Native enhancements, history and attachments remain accessible. Parsed menus are no longer a prerequisite or semantic approval fallback. Daemon-managed sessions without tmux panes retain their structured UI and do not expose fake terminal controls.
 
@@ -69,7 +75,9 @@ Drafts belong to their conversation and survive in-app session switching. Upload
 
 Camera and photo QR pairing have been removed from iOS. Use your existing Mac SSH account. Earlier QR transport code remains for compatibility tests; it is not an app connection option. `AGENTMUX_SSH_DISABLED=1` disables the legacy dedicated listener on port 9848.
 
-The HTTP API stays loopback-only, normally port 9847. `AGENTMUX_API_PORT` selects another local port; SSH discovery reports it automatically. The discovery file and administrator token must remain private. The daemon generates its local state in `.agentmux/`; `AGENTMUX_STATE` and `AGENTMUX_CONFIG` override the state and configuration locations. Initial provider login is performed on the Mac.
+The HTTP API stays loopback-only, normally port 9847. `AGENTMUX_API_PORT` selects another local port; SSH discovery reports it automatically. The discovery file and administrator token must remain private. The daemon stores device credentials, its SSH host key, administrator token and recovery journal in `~/.config/agentmux/state/`; `AGENTMUX_STATE` and `AGENTMUX_CONFIG` independently override the state and configuration locations. Their explicit relative paths remain relative to the launch directory. Defaults require an absolute `HOME`. Initial provider login is performed on the Mac.
+
+For an existing installation, copy the old `agentmux.json` to `~/.config/agentmux/agentmux.json` and the complete old `.agentmux/` directory to `~/.config/agentmux/state/` before starting the updated daemon. Preserve existing files at the destination; do not merge unrelated device stores. Keep directories private (`0700`) and configuration/key/token files private (`0600`). Retain the old files until the new service is verified. This preserves existing phone pairing. Project-local files are no longer loaded implicitly; environment overrides can still select them.
 
 ## Build unsigned IPA
 
@@ -134,7 +142,7 @@ The Swift probe compiles **the exact SSHTransport.swift used by iOS** for Mac-si
 ```sh
 swift build --scratch-path build/swift-probe --product SSHProbe
 # Generate a fresh QR first; this consumes it and revokes its test device afterward.
-AGENTMUX_PAIR_JSON="$PWD/.agentmux/pair.json" build/swift-probe/debug/SSHProbe
+AGENTMUX_PAIR_JSON="$HOME/.config/agentmux/state/pair.json" build/swift-probe/debug/SSHProbe
 ```
 
 To test normal SSH discovery without QR or the port-9848 listener:
@@ -194,3 +202,13 @@ Authenticated APIs use `Authorization: Bearer <device credential or local admini
 | PUT / GET | `/v1/attachments/{uuid}?name=...` | Private temporary chat upload / authenticated download (name required for PUT only) |
 
 Message actions accept `attachments: ["<receipt UUID>"]`; raw native paths supplied by clients are never trusted. Upload alone does not submit a prompt; send a message action to deliver the receipt to the selected session.
+
+### Local SDK-only builds
+
+If Xcode reports that the iOS platform is unavailable although the iPhone SDK is installed:
+
+```sh
+AGENTMUX_DIRECT_SDK=1 sh scripts/build-unsigned-ipa.sh
+```
+
+This builds SwiftTerm's real host generator before the device target.

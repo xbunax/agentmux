@@ -11,7 +11,8 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--build-only', action='store_true')
-parser.add_argument('--screen', choices=['sessions', 'chat', 'menu', 'commands', 'attachments', 'text', 'micro', 'glide', 'keyboard'], default='text')
+parser.add_argument('--screen', choices=['sessions', 'chat', 'menu', 'commands', 'attachments', 'text', 'micro', 'glide', 'keyboard', 'hidden', 'settings', 'palettes'], default='text')
+parser.add_argument('--palette', choices=['agentmux', 'gruvbox', 'catppuccin', 'nord', 'solarized'], default='agentmux')
 parser.add_argument('--light', action='store_true')
 parser.add_argument('--output', default='build/ui-preview.png')
 args = parser.parse_args()
@@ -53,9 +54,11 @@ try:
         run('xcrun', 'simctl', 'install', sim, str(app))
         run('xcrun', 'simctl', 'ui', sim, 'appearance', 'light' if args.light else 'dark')
         run('xcrun', 'simctl', 'status_bar', sim, 'override', '--time', '9:41', '--batteryState', 'charged', '--batteryLevel', '100')
-        flags = ['--preview-ui']
-        if args.screen in ['text', 'micro', 'glide', 'keyboard']:
+        flags = ['--preview-ui', '--preview-palette', args.palette]
+        if args.screen in ['text', 'micro', 'glide', 'keyboard', 'hidden']:
             flags += ['--preview-terminal', '--preview-' + args.screen]
+        elif args.screen in ['settings', 'palettes']:
+            flags += ['--preview-' + args.screen]
         elif args.screen != 'sessions':
             flags += ['--preview-chat', '--preview-' + args.screen]
         output = (repo / args.output).resolve()

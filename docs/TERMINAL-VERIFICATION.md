@@ -43,8 +43,27 @@ The preview app uses explicit DEBUG-only offline fixture bytes; screenshots esta
 ## Known boundaries
 
 - Capture/bootstrap restores the active screen and common modes, not every terminal state. Pre-attach scrollback, inactive alternate buffer, saved cursor/SGR pen, custom tab stops, graphics, mouse and extended keyboard protocols require more work/testing.
-- Output backpressure closes the stream rather than silently skipping bytes. Reconnect requires confirmation and a fresh snapshot; external remote resize also stops the stream.
+- Output backpressure closes the stream rather than silently skipping bytes. Reconnect requires a fresh snapshot and verified target identity; external remote resize also stops the stream.
 - Identity checks fail closed if process metadata is unavailable. macOS `ps` behavior and wrappers must pass the real fixture before claiming support.
 - No lease can stop a Mac keyboard. A write already dispatched cannot be recalled; OS process-change races remain possible between identity check and tmux execution.
 - Old clients using unbound `/input` or `/interrupt` must update with the daemon. Existing native adapters are reused, not replaced or widened to unverified APIs.
 - A successful IPA build or fixture screenshot is not real-device or paid-provider end-to-end acceptance.
+
+## 2026-10-16 local macOS update
+
+- `cargo test`: 39 passed; `cargo clippy --all-targets -- -D warnings` passed.
+- `python3 scripts/test-terminal-api.py`: passed (live loopback authentication and stale generation protection).
+- Isolated tmux 3.8 stream test: passed default unchanged grid, live phone resize and full-screen snapshots, invalid grid and duplicate request rejection, disable/close restoration, generation replacement, Mac-side size preservation, daemon kill/restart recovery, split-pane layout restoration, and pane respawn. Also passed cross-device ownership/403 checks and resize contention rejection. No paid providers invoked.
+- `cargo build --release --bin agentmuxd`: passed.
+- Device SDK Release build: passed using a directly built SwiftTerm host generator. The standard scheme destination is unavailable because this Xcode installation lacks its iOS platform component despite having an iPhone SDK.
+- No installed iOS simulator runtime. Real iPhone haptics, Chinese IME, keyboard transitions and system dictation still require device verification. Catalyst fixture captures, when available, only verify desktop-hosted SwiftUI layout.
+
+The user requested no further UI preview; visual acceptance will be performed by the user. No new screenshot is presented as verified device output.
+
+### Split-pane viewport correction
+
+The previous split test accepted a target narrower than the requested viewport. The corrected regression requires exact target dimensions in a three-pane layout (left agent, two stacked right panes), including shrink/grow transitions and a nested bottom-right target. The isolated tmux stream test passes with original-layout restoration after both targets disconnect. Rust's 39 tests, Clippy, Release daemon build and iOS Release build also pass. The direct-input panel uses less height with the keyboard open; device visual acceptance remains with the user.
+
+### Stable default configuration paths
+
+The default configuration now lives at `~/.config/agentmux/agentmux.json`, with device state in `~/.config/agentmux/state/`. Unit coverage verifies fixed paths, independent explicit overrides, missing HOME handling, private creation and preserving the original project roots when subsequently launched elsewhere. Final Rust suite: 42 passed; formatting, Clippy and release compilation passed. UI compilation passed; previews remain disabled unless explicitly requested via workflow dispatch.

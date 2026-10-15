@@ -1,15 +1,48 @@
-//! First-launch configuration using the launch directory and installed executables.
+//! Stable per-user paths; first-launch roots use the launch directory.
 
 use crate::{Agents, Config};
 use std::{
     ffi::OsStr,
     fs::{self, OpenOptions},
     io::{ErrorKind, Write},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::Path,
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
 };
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+pub struct Paths {
+    pub config: PathBuf,
+    pub state: PathBuf,
+}
+impl Paths {
+    pub fn from_env() -> Result<Self> {
+        Self::resolve(
+            std::env::var_os("HOME").as_deref().map(Path::new),
+            std::env::var_os("AGENTMUX_CONFIG").map(PathBuf::from),
+            std::env::var_os("AGENTMUX_STATE").map(PathBuf::from),
+        )
+    }
+
+    fn resolve(
+        home: Option<&Path>,
+        config: Option<PathBuf>,
+        state: Option<PathBuf>,
+    ) -> Result<Self> {
+        let base = if config.is_none() || state.is_none() {
+            let home = home.filter(|path| path.is_absolute()).ok_or(
+                "HOME must be an absolute path; alternatively set AGENTMUX_CONFIG and AGENTMUX_STATE",
+            )?;
+            home.join(".config/agentmux")
+        } else {
+            PathBuf::new()
+        };
+        Ok(Self {
+            config: config.unwrap_or_else(|| base.join("agentmux.json")),
+            state: state.unwrap_or_else(|| base.join("state")),
+        })
+    }
+}
 
 pub fn load_or_create(path: &Path) -> Result<Config> {
     match fs::read(path) {
@@ -51,6 +84,12 @@ fn create(path: &Path, directory: &Path, search_path: Option<&OsStr>) -> Result<
     };
     let mut bytes = serde_json::to_vec_pretty(&config)?;
     bytes.push(b'\n');
+    if let Some(parent) = path.parent().filter(|path| !path.as_os_str().is_empty()) {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+    }
     // Never truncate an existing config, including one created by another process.
     let mut file = match OpenOptions::new()
         .write(true)
@@ -77,6 +116,57 @@ fn create(path: &Path, directory: &Path, search_path: Option<&OsStr>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn defaults_are_fixed_under_the_user_config_directory() {
+        let paths = Paths::resolve(Some(Path::new("/users/test")), None, None).unwrap();
+        assert_eq!(
+            paths.config,
+            Path::new("/users/test/.config/agentmux/agentmux.json")
+        );
+        assert_eq!(paths.state, Path::new("/users/test/.config/agentmux/state"));
+    }
+
+    #[test]
+    fn explicit_paths_override_defaults_independently() {
+        let home = Some(Path::new("/users/test"));
+        let paths = Paths::resolve(home, Some("custom.json".into()), None).unwrap();
+        assert_eq!(paths.config, Path::new("custom.json"));
+        assert_eq!(paths.state, Path::new("/users/test/.config/agentmux/state"));
+        let paths = Paths::resolve(home, None, Some("private-state".into())).unwrap();
+        assert_eq!(
+            paths.config,
+            Path::new("/users/test/.config/agentmux/agentmux.json")
+        );
+        assert_eq!(paths.state, Path::new("private-state"));
+        assert!(Paths::resolve(None, Some("config".into()), Some("state".into())).is_ok());
+        assert!(Paths::resolve(None, None, None).is_err());
+        assert!(Paths::resolve(Some(Path::new("relative")), None, None).is_err());
+    }
+
+    #[test]
+    fn new_default_directory_is_private_and_reused_for_other_projects() {
+        let home = tempfile::tempdir().unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(Some(home.path()), None, None).unwrap();
+        let original = create(&paths.config, first.path(), None).unwrap();
+        let loaded = create(&paths.config, second.path(), None).unwrap();
+        assert_eq!(loaded.roots, original.roots);
+        assert_eq!(loaded.default_directory, original.default_directory);
+        assert_eq!(
+            fs::metadata(paths.config.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&paths.config).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 
     #[test]
     fn first_launch_creates_private_config_for_only_the_launch_directory() {

@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SSHConnectionSheet: View {
+    @Environment(\.appTheme) private var theme
     @EnvironmentObject var client: Client
     @Environment(\.dismiss) var dismiss
     @State private var host = ""
@@ -23,9 +24,9 @@ struct SSHConnectionSheet: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 12) {
-                        Image(systemName: "desktopcomputer.and.arrow.down").font(.largeTitle).foregroundStyle(AppTheme.accent)
+                        Image(systemName: "desktopcomputer.and.arrow.down").font(.largeTitle).foregroundStyle(theme.accent)
                         Text("连接你的 Mac").font(.title2.weight(.semibold))
-                        Text("登录后自动发现 AgentMux，让手机接上正在进行的工作。").font(.subheadline).foregroundStyle(AppTheme.secondary)
+                        Text("登录后自动发现 AgentMux，让手机接上正在进行的工作。").font(.subheadline).foregroundStyle(theme.secondary)
                     }.padding(.vertical, 12)
                 }.listRowBackground(Color.clear)
                 Section("Mac SSH") {

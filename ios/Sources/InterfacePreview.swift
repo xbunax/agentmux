@@ -61,14 +61,21 @@ enum InterfacePreview {
 }
 
 struct InterfacePreviewRoot: View {
+    private var previewTheme: AppTheme {
+        let args = ProcessInfo.processInfo.arguments
+        guard let index = args.firstIndex(of: "--preview-palette"), args.indices.contains(index + 1) else { return AppTheme() }
+        return AppTheme(palette: ColorPalette(rawValue: args[index + 1]) ?? .agentmux)
+    }
     var body: some View {
         Group {
             if ProcessInfo.processInfo.arguments.contains("--preview-terminal") {
                 NavigationStack { TerminalWorkbench(session: InterfacePreview.sessions[0], availableSessions: InterfacePreview.sessions) }
             } else if ProcessInfo.processInfo.arguments.contains("--preview-chat") {
                 NavigationStack { ChatView(session: InterfacePreview.sessions[0], availableSessions: InterfacePreview.sessions) }
-            } else { WorkspaceRoot() }
-        }.environment(\.horizontalSizeClass, .compact).onAppear {
+            } else if ProcessInfo.processInfo.arguments.contains("--preview-settings") { SettingsView() }
+            else if ProcessInfo.processInfo.arguments.contains("--preview-palettes") { NavigationStack { PalettePicker() } }
+            else { WorkspaceRoot() }
+        }.environment(\.appTheme, previewTheme).environment(\.horizontalSizeClass, .compact).onAppear {
             #if targetEnvironment(macCatalyst)
             for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
                 scene.sizeRestrictions?.minimumSize = CGSize(width: 430, height: 860)

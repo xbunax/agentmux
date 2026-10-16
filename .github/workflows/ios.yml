@@ -8,12 +8,14 @@ on:
       - 'ios/**'
       - 'scripts/build-unsigned-ipa.sh'
       - 'scripts/preview-ios-ui.py'
+      - 'tests/MicroLayoutProbe.swift'
   pull_request:
     paths:
       - '.github/workflows/ios.yml'
       - 'ios/**'
       - 'scripts/build-unsigned-ipa.sh'
       - 'scripts/preview-ios-ui.py'
+      - 'tests/MicroLayoutProbe.swift'
   workflow_dispatch:
     inputs:
       capture_previews:
@@ -52,6 +54,12 @@ jobs:
             brew install xcodegen
           fi
           xcodegen --version
+
+      - name: Check Micro button preferences
+        run: |
+          mkdir -p build
+          swiftc ios/Sources/MicroLayout.swift tests/MicroLayoutProbe.swift -o build/micro-layout-probe
+          build/micro-layout-probe
 
       - name: Build unsigned IPA
         run: |

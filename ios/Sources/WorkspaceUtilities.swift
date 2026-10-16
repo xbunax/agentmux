@@ -25,7 +25,8 @@ struct SettingsView: View {
                 Section {
                     Toggle("终端尺寸跟随手机", isOn: $followSize)
                     Toggle("浏览时自动隐藏控制栏", isOn: $autoHide)
-                    Toggle("滑控触觉反馈", isOn: $haptics)
+                    Toggle("控制栏触觉反馈", isOn: $haptics)
+                    NavigationLink("自定义 Micro 按钮") { MicroCustomization() }
                 } header: { Text("终端") } footer: {
                     Text("尺寸跟随会调整 Mac 上同一 tmux 窗口的排版，关闭或断开后恢复。多窗格保留分屏。浏览时可自动隐藏控制栏，底部按钮可随时恢复。触觉反馈仅表示手机接受操作。")
                 }.listRowBackground(theme.surface)

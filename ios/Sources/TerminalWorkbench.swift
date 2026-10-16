@@ -26,6 +26,7 @@ struct TerminalWorkbench: View {
     @AppStorage("workbenchMode") private var mode: WorkbenchMode = .micro
     @AppStorage("terminalAutoHide") private var autoHide = true
     @AppStorage("terminalHaptics") private var haptics = true
+    @AppStorage(MicroLayout.storageKey) private var storedMicroLayout = MicroLayout.defaultValue
     @AppStorage("terminalFollowSize") private var followSize = false
     @AppStorage("dictationHintSeen") private var dictationHintSeen = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -33,6 +34,7 @@ struct TerminalWorkbench: View {
     @State private var shown = false
     @State private var resumeOnActive = false
     @State private var details = false
+    @State private var customizingMicro = false
     @State private var dictationHint = false
     @State private var direct = false
     @State private var directFocus = false
@@ -86,6 +88,7 @@ struct TerminalWorkbench: View {
                 Menu {
                     Button("重新连接此会话") { directFocus = false; model.stop(); model.connect(client) }
                     Button("连接详情") { details = true }
+                    Button("自定义 Micro 按钮") { customizingMicro = true }
                     if session.mode != "generic" { Button("原生增强、附件与记录") { model.stop(); directFocus = false; enhancements = true } }
                     Button(collapsed ? "显示控制栏" : "隐藏控制栏") { collapse() }
                     if !attempted.isEmpty && attempted != draft {
@@ -110,6 +113,13 @@ struct TerminalWorkbench: View {
                     Text("开启后调整同一 tmux 窗口的排版；关闭或断开后恢复。多窗格保留分屏。")
                 }.appList().navigationTitle("连接详情").navigationBarTitleDisplayMode(.inline)
                     .toolbar { Button("完成") { details = false } }
+            }
+        }
+        .sheet(isPresented: $customizingMicro) {
+            NavigationStack {
+                MicroCustomization().toolbar {
+                    ToolbarItem(placement: .confirmationAction) { Button("完成") { customizingMicro = false } }
+                }
             }
         }
         .alert("使用系统听写", isPresented: $dictationHint) {
@@ -149,7 +159,12 @@ struct TerminalWorkbench: View {
             model.connect(client)
         }
         .onDisappear { shown = false; resumeOnActive = false; saveDraft(); model.stop() }
-        .onChange(of: draft) { _, _ in saveDraft() }
+        .onChange(of: draft) { _, _ in
+            saveDraft()
+            if draftFocus { model.returnToCursor?() }
+        }
+        .onChange(of: draftFocus) { _, focused in if focused { model.returnToCursor?() } }
+        .onChange(of: directFocus) { _, focused in if focused { model.returnToCursor?() } }
         .onChange(of: phase) { _, value in
             if value == .background {
                 resumeOnActive = shown && !enhancements && (model.active || model.connecting) && !model.uncertain
@@ -225,7 +240,7 @@ struct TerminalWorkbench: View {
                 TerminalKeyboard(enabled: model.canWrite, keepKeyboard: model.active && model.resizing, focused: $directFocus, commit: { text in
                     if text.contains("\n") && text != "\n" { model.paste(text, confirmed: true) }
                     else { model.committed(text) }
-                }, key: { model.key($0) })
+                }, key: { model.key($0) }, onInput: { model.returnToCursor?() })
                 .frame(height: 44).background(theme.elevated.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
                 if !keyboard { Text("点按此处唤起键盘；回车就是 Enter").font(.caption2).foregroundStyle(theme.secondary).onTapGesture { directFocus = true } }
             } else {
@@ -255,8 +270,11 @@ struct TerminalWorkbench: View {
         }
     }
     private var microPanel: some View {
-            VStack(spacing: 4) {
+            VStack(spacing: 5) {
                 ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 4) {
+                    Button { customizingMicro = true } label: {
+                        Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44)
+                    }.accessibilityLabel("自定义 Micro 按钮")
                     Menu {
                         ForEach(availableSessions.filter { $0.key != session.key }) { target in
                             Button {
@@ -266,35 +284,62 @@ struct TerminalWorkbench: View {
                             } label: { Label(target.projectName + " · " + target.displayName, systemImage: shortcuts.contains(target.key) ? "checkmark.circle.fill" : "circle") }
                             .disabled(!shortcuts.contains(target.key) && shortcuts.count >= 6)
                         }
-                    } label: { Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44) }.accessibilityLabel("配置最多六个会话快捷键")
+                    } label: { Image(systemName: "rectangle.stack.badge.plus").frame(width: 44, height: 44) }.accessibilityLabel("配置最多六个会话快捷键")
                     ForEach(Array(availableSessions.filter { $0.key != session.key && shortcuts.contains($0.key) }.prefix(6))) { target in
                         NavigationLink(value: target) { Text(target.projectName.prefix(5)).font(.caption2).lineLimit(1).frame(minWidth: 44, minHeight: 44).appGlass(radius: 12, interactive: true) }
                     }
-                } }
-                HStack(spacing: 5) {
-                    keyButton("Esc", "Escape"); keyButton("↑", "Up")
-                    keyButton("Tab", "Tab"); keyButton("Enter", "Enter")
-                }
-                HStack(spacing: 5) {
-                    keyButton("←", "Left"); keyButton("↓", "Down"); keyButton("→", "Right")
                     Menu {
-                        ForEach(["BSpace", "DC", "Home", "End", "PPage", "NPage", "C-c", "C-d"], id: \.self) { key in
-                            Button(key == "C-c" ? "Ctrl-C（中断信号）" : key == "C-d" ? "Ctrl-D" : key) { model.key(key) }
+                        ForEach(MicroAction.allCases.filter { $0.key != nil }) { action in
+                            Button(action.accessibilityLabel) { performMicro(action) }
                         }
-                    } label: { Image(systemName: "ellipsis").frame(maxWidth: .infinity).frame(height: 44) }
-                        .buttonStyle(MicroKeyStyle()).disabled(!model.canWrite).accessibilityLabel("更多终端按键")
-                }
-                HStack(spacing: 5) {
-                    HStack(spacing: 5) { keyButton("⇧Tab", "BTab"); keyButton("Space", "Space") }
-                    Button { beginDictation() } label: {
-                        Label("听写输入", systemImage: "mic").font(.callout.weight(.medium))
-                            .frame(maxWidth: .infinity).frame(height: 44)
-                    }.buttonStyle(MicroKeyStyle()).accessibilityHint("打开本地草稿与系统键盘")
+                    } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
+                        .disabled(!model.canWrite).accessibilityLabel("所有终端按键")
+                } }
+                let actions = MicroLayout.decode(storedMicroLayout)
+                if actions.isEmpty {
+                    Button("添加 Micro 按钮") { customizingMicro = true }.frame(minHeight: 44)
+                } else {
+                    Grid(horizontalSpacing: 5, verticalSpacing: 5) {
+                        ForEach(Array(stride(from: 0, to: actions.count, by: 4)), id: \.self) { start in
+                            GridRow {
+                                ForEach(Array(actions[start..<min(start + 4, actions.count)].enumerated()), id: \.element.id) { offset, action in
+                                    let span = action == .dictation && start + offset == actions.count - 1 ? 4 - offset : 1
+                                    microButton(action).gridCellColumns(span)
+                                }
+                                let lastIsWide = actions.last == .dictation
+                                if start + 4 > actions.count && !lastIsWide {
+                                    ForEach(0..<(4 - actions.count % 4), id: \.self) { _ in
+                                        Color.clear.frame(height: 44).gridCellUnsizedAxes(.horizontal)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
     }
+    private func microButton(_ action: MicroAction) -> some View {
+        Button { performMicro(action) } label: {
+            Group {
+                if action == .dictation { Label(action.title, systemImage: "mic") }
+                else { Text(action.title) }
+            }.font(.system(size: 13, weight: .medium, design: .monospaced))
+                .frame(maxWidth: .infinity).frame(minHeight: 44)
+        }.buttonStyle(MicroKeyStyle()).disabled(action.key != nil && !model.canWrite)
+            .accessibilityLabel(action.accessibilityLabel)
+    }
+    private func performMicro(_ action: MicroAction) {
+        if let key = action.key { sendKey(key) }
+        else { controlFeedback(); beginDictation() }
+    }
+    private func controlFeedback() {
+        if haptics { feedback.selectionChanged(); feedback.prepare() }
+    }
+    private func sendKey(_ key: String) {
+        if model.key(key) { controlFeedback() }
+    }
     private func keyButton(_ title: String, _ key: String) -> some View {
-        Button { model.key(key) } label: { Text(title).font(.system(size: 13, weight: .medium, design: .monospaced)).frame(minWidth: 44, minHeight: 44) }
+        Button { sendKey(key) } label: { Text(title).font(.system(size: 13, weight: .medium, design: .monospaced)).frame(minWidth: 44, minHeight: 44) }
             .buttonStyle(MicroKeyStyle()).disabled(!model.canWrite).accessibilityLabel(key)
     }
     private var glidePanel: some View {

@@ -166,6 +166,7 @@ struct TerminalGrid: Equatable { let cols: Int; let rows: Int }
     @discardableResult private func enqueue(_ input: TerminalInput) -> Bool {
         guard canWrite else { return false }
         guard queue.count < 12 else { stop(); uncertain = true; status = "输入队列已满，已停止；请检查现场"; return false }
+        returnToCursor?()
         queue.append(input); drain(); return true
     }
     private func drain() {

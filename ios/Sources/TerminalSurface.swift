@@ -68,7 +68,9 @@ struct TerminalSurface: UIViewRepresentable {
             return moved
         }
         model.returnToCursor = { [weak coordinator = context.coordinator] in
-            coordinator?.followCursor = true; coordinator?.showCursor()
+            coordinator?.followCursor = true
+            coordinator?.alignToBottom = true
+            coordinator?.showCursor()
         }
         scroll.accessibilityLabel = "实时终端，可滚动浏览或双指缩放"
         applyTheme(terminal)
@@ -103,6 +105,7 @@ struct TerminalSurface: UIViewRepresentable {
         let model: TerminalSessionModel
         var onBrowse: () -> Void
         var followCursor = true
+        var alignToBottom = false
         var themeKey = ""
         private var lastViewport = CGSize.zero
         private var dragOrigin = CGPoint.zero
@@ -128,6 +131,11 @@ struct TerminalSurface: UIViewRepresentable {
             let cursor = grid.getCursorLocation()
             let w = frame.width / CGFloat(max(1, grid.cols)), h = frame.height / CGFloat(max(1, grid.rows))
             let scale = scroll.zoomScale
+            if alignToBottom {
+                // Keep the TUI's bottom input box visible, including after keyboard/layout changes.
+                let bottom = max(0, scroll.contentSize.height - scroll.bounds.height)
+                scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: bottom), animated: false)
+            }
             scroll.scrollRectToVisible(CGRect(x: CGFloat(cursor.x) * w * scale, y: CGFloat(cursor.y) * h * scale, width: w * scale, height: h * scale), animated: false)
         }
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { terminal }
@@ -166,6 +174,7 @@ struct TerminalKeyboard: UIViewRepresentable {
     @Binding var focused: Bool
     let commit: (String) -> Void
     let key: (String) -> Void
+    var onInput: () -> Void = {}
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextView {
         let view = KeyReceiver()
@@ -210,7 +219,9 @@ struct TerminalKeyboard: UIViewRepresentable {
             return true
         }
         func textViewDidChange(_ textView: UITextView) {
-            guard enabled, !resetting, textView.markedTextRange == nil else { return }
+            guard enabled, !resetting else { return }
+            parent.onInput()
+            guard textView.markedTextRange == nil else { return }
             let committed = textView.text.hasPrefix(Self.sentinel) ? String(textView.text.dropFirst()) : textView.text ?? ""
             resetting = true
             textView.text = Self.sentinel; textView.selectedRange = NSRange(location: 1, length: 0)

@@ -42,7 +42,7 @@ struct TerminalGrid: Equatable { let cols: Int; let rows: Int }
     var browse: ((CGFloat, CGFloat) -> Bool)?
     private(set) var session: AgentSession
     private weak var client: Client?
-    private var channel: TerminalHTTPStream?
+    private var channel: TerminalStream?
     private var streamTask: Task<Void, Never>?
     private var writeTask: Task<Void, Never>?
     private var nativeTask: Task<Void, Never>?
@@ -68,7 +68,7 @@ struct TerminalGrid: Equatable { let cols: Int; let rows: Int }
     func connect(_ client: Client) {
         guard !active, !connecting else { return }
         stop(); self.client = client
-        guard let paneID, let profile = client.paired else { status = "请先连接 Mac，再打开会话"; return }
+        guard let paneID, client.paired != nil else { status = "请先连接 Mac，再打开会话"; return }
         let epoch = self.epoch
         connecting = true; status = "正在连接 Mac 上的会话…"; uncertain = false
         streamTask = Task { [weak self] in
@@ -82,7 +82,7 @@ struct TerminalGrid: Equatable { let cols: Int; let rows: Int }
                     _ = try? await client.request("/v1/terminal/streams/\(attachment.generation)", method: "DELETE"); return
                 }
                 self.attachment = attachment
-                let channel = try await client.ssh.terminalStream(profile: profile, generation: attachment.generation)
+                let channel = try await client.terminalStream(generation: attachment.generation)
                 guard self.epoch == epoch, !Task.isCancelled else { channel.close(); return }
                 self.channel = channel
                 for try await bytes in channel.frames {

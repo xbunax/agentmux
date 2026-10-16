@@ -16,7 +16,7 @@ struct PairingStatus: View {
                         .frame(width: 44, height: 44).background(theme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 13))
                     VStack(alignment: .leading, spacing: 4) {
                         Text(mac.host).font(.subheadline.weight(.semibold)).foregroundStyle(theme.text).lineLimit(1)
-                        Text(mac.username + " · SSH").font(.caption).foregroundStyle(theme.secondary)
+                        Text(mac.connectionTitle).font(.caption).foregroundStyle(theme.secondary)
                     }
                     Spacer(minLength: 4)
                     StatusBadge(title: client.isConnected ? "已连接" : "已保存", color: client.isConnected ? theme.accent : theme.secondary)
@@ -24,11 +24,24 @@ struct PairingStatus: View {
                 if manage {
                     DisclosureGroup("连接详情", isExpanded: $details) {
                         VStack(alignment: .leading, spacing: 8) {
-                            LabeledContent("SSH 端口", value: String(mac.port))
-                            Text(sshFingerprint(mac.hostKey)).font(.caption.monospaced()).textSelection(.enabled)
-                            Text("主机密钥已固定，凭据保存在此设备的钥匙串。").font(.caption).foregroundStyle(theme.secondary)
+                            if mac.iroh != nil {
+                                Text(client.connectionPath).font(.caption)
+                                Text(mac.hostKey).font(.caption.monospaced()).textSelection(.enabled)
+                            } else {
+                                LabeledContent("SSH 端口", value: String(mac.port))
+                                Text(sshFingerprint(mac.hostKey)).font(.caption.monospaced()).textSelection(.enabled)
+                            }
+                            Text("设备身份已固定，凭据保存在此设备的钥匙串。").font(.caption).foregroundStyle(theme.secondary)
                         }.padding(.top, 8)
                     }.font(.subheadline)
+                    if client.connections.profiles.count > 1 {
+                        Menu("切换已保存的连接") {
+                            ForEach(client.connections.profiles, id: \.deviceID) { mac in
+                                Button(mac.host + " · " + mac.transportTitle) { Task { await client.selectConnection(mac) } }
+                            }
+                        }
+                    }
+                    Button("添加其他连接") { connectingSSH = true }
                     Button("移除此 Mac", role: .destructive) { forget = true }.font(.subheadline).frame(minHeight: 44)
                 }
             } else {
@@ -43,11 +56,17 @@ struct PairingStatus: View {
                         Text("连接 Mac，在手机上继续对话、查看进展和确认操作。").font(.subheadline).foregroundStyle(theme.secondary)
                     }
                     Button { connectingSSH = true } label: { Label("连接 Mac", systemImage: "plus") }.buttonStyle(PrimaryButtonStyle())
-                    Label("通过 SSH 加密连接", systemImage: "lock.shield").font(.caption).foregroundStyle(theme.secondary)
+                    Label("支持 iroh 扫码与 SSH 加密连接", systemImage: "lock.shield").font(.caption).foregroundStyle(theme.secondary)
                 }.padding(.vertical, 8)
             }
         }.padding(16).appPanel()
-            .sheet(isPresented: $connectingSSH) { SSHConnectionSheet() }
+            .task(id: client.paired?.deviceID) {
+                while !Task.isCancelled {
+                    await client.refreshConnectionPath()
+                    try? await Task.sleep(for: .seconds(2))
+                }
+            }
+            .sheet(isPresented: $connectingSSH) { AddConnectionSheet() }
             .confirmationDialog("移除此 Mac 的设备凭据并断开连接？", isPresented: $forget) {
                 Button("移除并断开", role: .destructive) { Task { await client.forget() } }
             }

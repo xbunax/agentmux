@@ -2,9 +2,9 @@ name: Terminal transport checks
 on:
   push:
     branches: [main]
-    paths: ['src/**', 'Cargo.*', 'scripts/test-terminal*.py', '.github/workflows/terminal.yml']
+    paths: ['src/**', 'Cargo.*', 'scripts/test-terminal*.py', '.github/workflows/terminal.yml', 'scripts/test-iroh-transport.py', 'tests/*Probe.swift', 'ios/Sources/*Transport.swift', 'ios/Sources/ConnectionProfile.swift', 'Package.*']
   pull_request:
-    paths: ['src/**', 'Cargo.*', 'scripts/test-terminal*.py', '.github/workflows/terminal.yml']
+    paths: ['src/**', 'Cargo.*', 'scripts/test-terminal*.py', '.github/workflows/terminal.yml', 'scripts/test-iroh-transport.py', 'tests/*Probe.swift', 'ios/Sources/*Transport.swift', 'ios/Sources/ConnectionProfile.swift', 'Package.*']
   workflow_dispatch:
 permissions:
   contents: read
@@ -37,3 +37,28 @@ jobs:
       - run: cargo test
       - run: python3 scripts/test-terminal-api.py
       - run: python3 scripts/test-terminal-stream.py
+
+  iroh-swift:
+    name: Swift iroh interoperability
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install tmux
+        run: command -v tmux || brew install tmux
+      - name: Build daemon
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo build --locked
+      - name: Build actual iOS transport probe
+        run: swift build --scratch-path build/ssh-login-probe --product SSHProbe
+      - name: Test QR pairing, peer authorization, terminal, files, reconnect and revocation
+        run: python3 scripts/test-iroh-transport.py
+      - name: Test existing SSH login transport
+        run: |
+          python3 -m venv build/ssh-test-env
+          build/ssh-test-env/bin/pip install paramiko==3.5.1
+          build/ssh-test-env/bin/python scripts/test-ssh-login.py

@@ -10,6 +10,10 @@ import Foundation
         }
     }
     static func run() async throws {
+        if let path = ProcessInfo.processInfo.environment["AGENTMUX_IROH_PAIR_JSON"] {
+            try await testIrohTransport(path: path)
+            return
+        }
         if let host = ProcessInfo.processInfo.environment["AGENTMUX_SSH_HOST"] {
             try await testSSHLogin(host: host)
             return

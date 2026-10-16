@@ -3,6 +3,7 @@ mod attachments;
 mod config;
 mod discovery;
 mod interactions;
+mod iroh_transport;
 mod pairing;
 mod pi_bridge;
 mod plugin_bridge;
@@ -48,6 +49,8 @@ struct Config {
     roots: Vec<PathBuf>,
     default_directory: PathBuf,
     agents: Agents,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    iroh: Option<iroh_transport::Settings>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Agents {
@@ -66,6 +69,7 @@ struct App {
     relay: relay::Manager,
     terminal: terminal::Manager,
     attachments: attachments::Store,
+    iroh: Arc<iroh_transport::Manager>,
 }
 type Shared = Arc<App>;
 fn authorize(headers: &HeaderMap, app: &App) -> Result<()> {
@@ -146,6 +150,10 @@ async fn update_settings(
     {
         return Err(bad("Agent executables can only be configured locally"));
     }
+    if next.iroh.is_some() && next.iroh != current.iroh {
+        return Err(bad("iroh settings can only be configured locally"));
+    }
+    next.iroh = current.iroh.clone();
     next.revision = current
         .revision
         .checked_add(1)
@@ -374,6 +382,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
     };
     if std::env::args().nth(1).as_deref() == Some("pair") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        if args == ["--transport", "iroh"] {
+            return iroh_transport::pair_cli(&token, &state_dir).await;
+        }
+        if args.first().is_some_and(|arg| arg.starts_with('-')) {
+            return Err("Usage: agentmuxd pair [host] | agentmuxd pair --transport iroh".into());
+        }
         let host = std::env::args().nth(2).unwrap_or_else(|| {
             let socket = std::net::UdpSocket::bind("0.0.0.0:0").expect("Local UDP socket");
             if socket.connect("1.1.1.1:80").is_ok() {
@@ -416,9 +431,51 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         relay: relay::Manager::default(),
         terminal: terminal::Manager::with_journal(&state_dir),
         attachments: attachments::Store::temporary(&state_dir)?,
+        iroh: Arc::new(iroh_transport::Manager::new(state_dir)),
     });
     terminal::recover_sizes(&app).await;
-    let router = Router::new()
+    let router = api_router(app.clone());
+    let listener =
+        tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, api_port())).await?;
+    discovery::publish(&app)?;
+    let iroh_enabled = app
+        .config
+        .lock()
+        .await
+        .iroh
+        .as_ref()
+        .is_some_and(|settings| settings.enabled);
+    if iroh_enabled {
+        app.iroh
+            .start(app.clone())
+            .await
+            .map_err(|(_, message)| message)?;
+    }
+    if std::env::var_os("AGENTMUX_SSH_DISABLED").is_none() {
+        tokio::spawn(async move {
+            if let Err(error) = pairing::serve(pairing).await {
+                eprintln!("SSH transport stopped: {error}");
+            }
+        });
+        eprintln!("Optional QR SSH on port 9848: `agentmuxd pair [Mac-IP-or-Tailscale-host]`.");
+    }
+    eprintln!("agentmuxd API on 127.0.0.1:{}", api_port());
+    eprintln!(
+        "Pair over iroh with `agentmuxd pair --transport iroh`, or connect using SSH in the iPhone app."
+    );
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await?;
+    app.iroh.shutdown().await;
+    Ok(())
+}
+
+fn api_router(app: Shared) -> Router {
+    Router::new()
+        .route("/v1/iroh/pair/issue", post(iroh_transport::issue))
+        .route("/v1/iroh/status", get(iroh_transport::status))
         .route("/v1/pair/issue", post(pairing::issue))
         .route("/v1/pair/complete", post(pairing::complete))
         .route("/v1/devices", get(pairing::devices).post(pairing::enroll))
@@ -450,28 +507,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .route("/v1/files", get(files))
         .route("/v1/file", get(download).put(upload))
         .layer(DefaultBodyLimit::max(MAX_FILE))
-        .with_state(app.clone());
-    let listener =
-        tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, api_port())).await?;
-    discovery::publish(&app)?;
-    if std::env::var_os("AGENTMUX_SSH_DISABLED").is_none() {
-        tokio::spawn(async move {
-            if let Err(error) = pairing::serve(pairing).await {
-                eprintln!("SSH transport stopped: {error}");
-            }
-        });
-        eprintln!("Optional QR SSH on port 9848: `agentmuxd pair [Mac-IP-or-Tailscale-host]`.");
-    }
-    eprintln!("agentmuxd API on 127.0.0.1:{}", api_port());
-    eprintln!(
-        "In the iPhone app, choose SSH connection and sign in to this Mac to discover AgentMux automatically."
-    );
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
-    Ok(())
+        .with_state(app)
 }
 #[cfg(test)]
 mod tests {
@@ -499,6 +535,7 @@ mod tests {
                     claude: "claude".into(),
                     pi: "pi".into(),
                 },
+                iroh: None,
             }),
             ceiling: vec![],
             config_path: PathBuf::new(),
@@ -509,6 +546,7 @@ mod tests {
             relay: relay::Manager::default(),
             terminal: terminal::Manager::default(),
             attachments: attachments::Store::new(PathBuf::new()),
+            iroh: Arc::new(iroh_transport::Manager::new(PathBuf::new())),
         };
         let mut headers = HeaderMap::new();
         assert!(authorize(&headers, &app).is_err());

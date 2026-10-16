@@ -81,6 +81,7 @@ fn create(path: &Path, directory: &Path, search_path: Option<&OsStr>) -> Result<
             claude: executable("claude", &directory, search_path),
             pi: executable("pi", &directory, search_path),
         },
+        iroh: None,
     };
     let mut bytes = serde_json::to_vec_pretty(&config)?;
     bytes.push(b'\n');

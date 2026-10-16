@@ -212,3 +212,31 @@ AGENTMUX_DIRECT_SDK=1 sh scripts/build-unsigned-ipa.sh
 ```
 
 This builds SwiftTerm's real host generator before the device target.
+
+### Connect over iroh (QR)
+
+SSH remains available. iroh is built into `agentmuxd`; no extra daemon, port forwarding or Mac SSH login is required. Start the updated daemon, then run locally:
+
+```sh
+agentmuxd pair --transport iroh
+```
+
+In AgentMux for iOS (17.5 or later), choose **Connect Mac → Scan QR · iroh**. Scan the terminal code, import a photo, or paste the JSON from `~/.config/agentmux/state/pair-iroh.json`. Confirm the Mac name and public identity. Codes expire after five minutes and work once; issuing a new code replaces the previous one. Keep pairing files private and out of Git.
+
+Explicit pairing persists `iroh.enabled: true` in `~/.config/agentmux/agentmux.json`. The stable daemon identity is `~/.config/agentmux/state/iroh.key`; back it up privately with the other state files. Losing this key requires pairing again. Existing SSH profiles continue to work and can be selected alongside iroh connections. Saved profiles and the phone's private identity are stored in Keychain. Device revocation closes active iroh connections. Connection details indicate direct or relay routing; inputs are never automatically replayed after a failure.
+
+By default iroh uses n0 public discovery and relays. Traffic is end-to-end encrypted, although infrastructure can observe connection metadata. To use your own relay, set:
+
+```json
+"iroh": { "enabled": true, "relay_urls": ["https://relay.example.com"] }
+```
+
+Restart the daemon after changing relay configuration, then generate a fresh pairing code so the phone receives the updated hints. `relay_urls: []` disables relays and discovery for direct-only/offline testing. Omitting the `iroh` section keeps iroh disabled until the local pairing command is used. The existing HTTP API continues to bind only to loopback.
+
+Test the actual mobile transport locally without using an agent provider or your existing tmux sessions:
+
+```sh
+cargo build --locked
+swift build --scratch-path build/ssh-login-probe --product SSHProbe
+python3 scripts/test-iroh-transport.py
+```

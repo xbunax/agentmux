@@ -59,7 +59,7 @@ struct TerminalWorkbench: View {
         _model = StateObject(wrappedValue: TerminalSessionModel(session: session))
     }
     private var draftKey: String {
-        let host = client.paired.map { "\($0.host):\($0.port):\($0.username):\($0.hostKey)" } ?? "offline"
+        let host = client.paired?.draftIdentity ?? "offline"
         return "terminal-draft." + SHA256.hash(data: Data((host + ":" + session.key).utf8)).map { String(format: "%02x", $0) }.joined()
     }
     var body: some View {

@@ -59,17 +59,6 @@ struct PairCode: Codable {
         case hostKey = "host_key"
     }
 }
-struct PairedMac: Codable, Equatable {
-    let host: String
-    let port: Int
-    let username: String
-    let hostKey: String
-    let credential: String
-    let deviceID: String
-    var sshLogin: SSHLogin? = nil
-    var apiPort: Int? = nil
-}
-struct SSHResponse: Sendable { let status: Int; let data: Data }
 private final class ResponseHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPClientResponsePart
     let promise: EventLoopPromise<SSHResponse>
@@ -244,11 +233,6 @@ actor SSHTransport {
 
 /// A single generation of terminal output. Cancellation closes its own forwarding
 /// channel, not the shared SSH client used by files and native capabilities.
-struct TerminalHTTPStream: @unchecked Sendable {
-    let frames: AsyncThrowingStream<Data, Error>
-    let channel: Channel
-    func close() { channel.close(promise: nil) }
-}
 private final class TerminalResponseHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPClientResponsePart
     let continuation: AsyncThrowingStream<Data, Error>.Continuation
@@ -293,8 +277,8 @@ private final class TerminalResponseHandler: ChannelInboundHandler, @unchecked S
         if !ended { continuation.finish(throwing: URLError(.networkConnectionLost)) }
     }
 }
-extension SSHTransport {
-    func terminalStream(profile: PairedMac, generation: String) async throws -> TerminalHTTPStream {
+extension SSHTransport: AgentTransport {
+    func terminalStream(profile: PairedMac, generation: String) async throws -> TerminalStream {
         guard UUID(uuidString: generation) != nil else { throw URLError(.badURL) }
         let client = try await connection(profile)
         let pair = AsyncThrowingStream<Data, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
@@ -319,7 +303,7 @@ extension SSHTransport {
                 channel.write(HTTPClientRequestPart.head(head), promise: nil)
                 return channel.writeAndFlush(HTTPClientRequestPart.end(nil))
             }.get()
-            return TerminalHTTPStream(frames: pair.stream, channel: channel)
+            return TerminalStream(frames: pair.stream) { channel.close(promise: nil) }
         } catch { channel.close(promise: nil); throw error }
     }
 }

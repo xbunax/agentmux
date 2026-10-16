@@ -9,26 +9,49 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
 }
-fn secret() -> String {
+pub(crate) fn secret() -> String {
     format!(
         "{}{}",
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     )
 }
-fn digest(value: &str) -> String {
+pub(crate) fn digest(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn iroh_credentials_require_the_enrolled_peer_and_never_authenticate_ssh() {
+        let directory = tempfile::tempdir().unwrap();
+        let pairing = Pairing::load(directory.path().to_path_buf()).unwrap();
+        let enrolled = pairing
+            .enroll("phone".into(), Some("peer-a".into()))
+            .unwrap();
+        let token = enrolled["token"].as_str().unwrap();
+        assert!(pairing.valid_peer(token, "peer-a"));
+        assert!(!pairing.valid_peer(token, "peer-b"));
+        assert!(!pairing.valid_peer("wrong", "peer-a"));
+        assert!(!pairing.authenticate(token));
+        let reloaded = Pairing::load(directory.path().to_path_buf()).unwrap();
+        assert!(reloaded.valid_peer(token, "peer-a"));
+        assert!(
+            !std::fs::read_to_string(directory.path().join("devices.json"))
+                .unwrap()
+                .contains(token)
+        );
+        let legacy: Device =
+            serde_json::from_str(r#"{"id":"old","name":"old","hash":"hash","created":0}"#).unwrap();
+        assert!(legacy.peer.is_none());
+    }
     #[test]
     fn host_identity_persists_and_credentials_are_hashed() {
         let directory = tempfile::tempdir().unwrap();
@@ -50,6 +73,7 @@ mod tests {
             name: "test".into(),
             hash: digest(&token),
             created: now(),
+            peer: None,
         });
         assert!(first.valid_device(&token));
         assert!(!first.valid_device("wrong"));
@@ -104,6 +128,8 @@ pub struct Device {
     pub name: String,
     hash: String,
     pub created: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
 }
 struct Ticket {
     hash: String,
@@ -166,7 +192,25 @@ impl Pairing {
         let hash = digest(token);
         self.devices.lock().unwrap().iter().any(|d| d.hash == hash)
     }
+    pub fn known_peer(&self, peer: &str) -> bool {
+        self.devices
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|d| d.peer.as_deref() == Some(peer))
+    }
+    pub fn valid_peer(&self, token: &str, peer: &str) -> bool {
+        let hash = digest(token);
+        self.devices
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|d| d.hash == hash && d.peer.as_deref() == Some(peer))
+    }
     fn enroll_device(&self, name: String) -> Result<serde_json::Value> {
+        self.enroll(name, None)
+    }
+    pub fn enroll(&self, name: String, peer: Option<String>) -> Result<serde_json::Value> {
         if name.len() > 100 || name.trim().is_empty() {
             return Err(bad("Device name must contain 1–100 bytes"));
         }
@@ -176,6 +220,7 @@ impl Pairing {
             name,
             hash: digest(&token),
             created: now(),
+            peer,
         };
         let mut devices = self.devices.lock().unwrap();
         let mut next = devices.clone();
@@ -189,10 +234,16 @@ impl Pairing {
         Ok(serde_json::json!({"token": token, "device_id": device.id}))
     }
     fn authenticate(&self, password: &str) -> bool {
-        if self.valid_device(password) {
+        let hash = digest(password);
+        if self
+            .devices
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|d| d.hash == hash && d.peer.is_none())
+        {
             return true;
         }
-        let hash = digest(password);
         let mut tickets = self.tickets.lock().unwrap();
         tickets.retain(|_, t| t.expires > now());
         if let Some(ticket) = tickets
@@ -313,7 +364,7 @@ pub async fn devices(
             .lock()
             .unwrap()
             .iter()
-            .map(|d| serde_json::json!({"id":d.id,"name":d.name,"created":d.created}))
+            .map(|d| serde_json::json!({"id":d.id,"name":d.name,"created":d.created,"transport":if d.peer.is_some() { "iroh" } else { "ssh" }}))
             .collect(),
     )))
 }
@@ -324,6 +375,10 @@ pub async fn revoke(
 ) -> Result<StatusCode> {
     authorize(&headers, &app)?;
     let mut devices = app.pairing.devices.lock().unwrap();
+    let peer = devices
+        .iter()
+        .find(|d| d.id == id)
+        .and_then(|d| d.peer.clone());
     let next: Vec<_> = devices.iter().filter(|d| d.id != id).cloned().collect();
     private_write(
         &app.pairing.directory.join("devices.json"),
@@ -331,6 +386,10 @@ pub async fn revoke(
     )
     .map_err(internal)?;
     *devices = next;
+    drop(devices);
+    if let Some(peer) = peer {
+        app.iroh.revoke(&peer);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 #[derive(Clone)]

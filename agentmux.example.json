@@ -2,6 +2,9 @@
   "revision": 0,
   "roots": ["/Users/YOUR_USER/Projects"],
   "default_directory": "/Users/YOUR_USER/Projects",
+  "iroh": {
+    "enabled": false
+  },
   "agents": {
     "codex": "/opt/homebrew/bin/codex",
     "claude": "/opt/homebrew/bin/claude",

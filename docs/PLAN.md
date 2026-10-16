@@ -33,3 +33,21 @@ Acceptance: duplicate requests never execute twice, reconnect recovers committed
 launchd install/uninstall, protected configuration directory, per-device revocable credentials, service status/logs/restart from App, configurable upload quotas, transfer cancellation and cleanup, secure audit events, production security review. Keep SSH enablement and initial root approval local. No silent public binding or remote executable replacement.
 
 Acceptance: clean Mac installation, upgrade/rollback, independently signed iPhone installation and real-device end-to-end tests. An unsigned IPA alone is not installability evidence.
+
+## Milestone F — embedded iroh and QR pairing
+
+Add iroh beside SSH, inside the daemon process. Local `agentmuxd pair --transport iroh` starts the endpoint and enables it for subsequent launches. A version-2 QR contains the daemon's public EndpointId, address hints, relay configuration, a single-use random ticket, and a five-minute expiry. Generating a new code invalidates the previous iroh code. Neither private identities nor permanent credentials are embedded.
+
+The official Swift IrohLib 1.1.0 SDK requires iOS 17.5; daemon iroh is pinned at 1.3.0. Their interoperability is checked using the actual client transport against an isolated Rust daemon. This raises the minimum iOS version from 17.0 to 17.5.
+
+An authenticated QUIC connection carries bounded API requests on independent bidirectional streams, using ALPN `agentmux/api/1`; initial enrollment uses `agentmux/pair/1`. Existing Axum handlers enforce file confinement, authorization, terminal ownership, generation and input sequence checks. A response supports bounded streaming chunks, including existing terminal NDJSON. No arbitrary TCP forwarding or remote shell is exposed. Reconnect never resends an input request or switches to SSH.
+
+Daemon identity is stored at `~/.config/agentmux/state/iroh.key` (0600). Device credentials remain hashed in devices.json and bind to the enrolled mobile EndpointId. Phone identity and saved profiles are stored in Keychain; legacy SSH profiles migrate without losing their credentials. Revoking a device invalidates subsequent requests immediately and closes its active connections. HTTP remains loopback-only, SSH pinning remains intact.
+
+Default discovery/relay uses the public n0 network, with optional `iroh.relay_urls` for self-hosted relays. Relays carry encrypted traffic; discovery/relay infrastructure can observe routing metadata. An empty relay list selects offline direct-only mode, used by automated tests. Configuration changes to relay selection take effect after a daemon restart. Existing configurations leave iroh disabled until explicitly paired.
+
+The iOS connection chooser supports camera, photos and pasted pairing JSON, shows the Mac identity before enrollment, and retains separate saved SSH/iroh profiles. Connection details report selected direct/relay paths. Existing Liquid Glass styles, drafts, Micro controls and terminal behavior are reused.
+
+Validation: Rust authentication/expiry/limits tests, Rust-to-Swift pairing and streaming probe, SSH regression, iOS release compile, and GitHub Actions IPA. Real iPhone camera, LAN/cellular transitions, relay-only networks and foreground recovery still require device testing; desktop probes cannot establish those behaviors.
+
+Local verification completed: 46 Rust unit tests; warning-free clippy; terminal API and real isolated tmux regression; actual IrohLib 1.1.0 ↔ Rust iroh 1.3.0 enrollment, ticket reuse rejection, wrong-peer rejection, Unicode terminal input, independent stream cancellation, bounded file round-trip, path confinement, settings compatibility, reconnect, revocation and daemon identity persistence; iOS Release build. LAN/cellular and public-relay behavior on an iPhone remain device acceptance checks.

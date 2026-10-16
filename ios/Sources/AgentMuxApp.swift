@@ -59,48 +59,115 @@ enum Keychain {
     }
 }
 @MainActor final class Client: ObservableObject {
-    @Published var paired: PairedMac? = {
+    private static func loadConnections() -> ConnectionStore {
+        if let stored = try? JSONDecoder().decode(ConnectionStore.self, from: Data(Keychain.load(account: "connections-v2").utf8)) { return stored }
+        if let old = try? JSONDecoder().decode(PairedMac.self, from: Data(Keychain.load(account: "paired-mac").utf8)) {
+            return ConnectionStore(selectedID: old.deviceID, profiles: [old])
+        }
+        return ConnectionStore(selectedID: nil, profiles: [])
+    }
+    @Published private(set) var connections = Client.loadConnections()
+    var paired: PairedMac? {
         #if DEBUG
         if InterfacePreview.enabled { return InterfacePreview.mac }
         #endif
-        return try? JSONDecoder().decode(PairedMac.self, from: Data(Keychain.load(account: "paired-mac").utf8))
-    }()
+        return connections.selected
+    }
     @Published var error: String?
     @Published var isConnected = false
+    @Published var connectionPath = ""
     var chatDrafts: [String: ChatDraftState] = [:]
     var attachmentURLs: [String: URL] = [:]
     let ssh = SSHTransport()
+    let iroh = IrohTransport()
+    private func persist(_ next: ConnectionStore) throws {
+        try Keychain.save(String(decoding: JSONEncoder().encode(next), as: UTF8.self), account: "connections-v2")
+        connections = next
+    }
+    private func save(_ mac: PairedMac) throws {
+        var next = connections
+        next.profiles.removeAll { $0.deviceID == mac.deviceID }
+        next.profiles.append(mac); next.selectedID = mac.deviceID
+        try persist(next)
+        isConnected = true; error = nil
+    }
+    private func prepareIroh() async throws {
+        let saved = Keychain.load(account: "iroh-identity")
+        let key: Data
+        if saved.isEmpty {
+            var bytes = [UInt8](repeating: 0, count: 32)
+            guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw URLError(.cannotCreateFile) }
+            key = Data(bytes)
+            try Keychain.save(key.base64EncodedString(), account: "iroh-identity")
+        } else {
+            guard let value = Data(base64Encoded: saved), value.count == 32 else { throw IrohError.message("设备身份损坏，请恢复钥匙串后重试") }
+            key = value
+        }
+        try await iroh.setIdentity(key)
+    }
+    private func transport(for mac: PairedMac) async throws -> any AgentTransport {
+        if mac.iroh != nil { try await prepareIroh(); return iroh }
+        return ssh
+    }
     func connectSSH(host: String, port: Int, username: String, hostKey: String, login: SSHLogin) async throws {
         let mac = try await ssh.connectSSH(host: host, port: port, username: username, hostKey: hostKey, login: login, deviceName: "AgentMux iPhone")
+        do { try Task.checkCancellation(); try save(mac) }
+        catch {
+            _ = try? await ssh.request(profile: mac, path: "/v1/devices/\(mac.deviceID)", method: "DELETE", token: mac.credential, body: nil)
+            await ssh.disconnect(); throw error
+        }
+    }
+    func connectIroh(_ code: IrohPairCode) async throws {
+        try await prepareIroh()
+        let mac = try await iroh.pair(code, name: UIDevice.current.name)
         do {
             try Task.checkCancellation()
-            try Keychain.save(String(decoding: JSONEncoder().encode(mac), as: UTF8.self), account: "paired-mac")
+            let response = try await iroh.request(profile: mac, path: "/v1/settings", method: "GET", token: mac.credential, body: nil)
+            guard response.status == 200 else { throw IrohError.message("配对成功，但服务验证失败（\(response.status)）") }
+            try save(mac)
+            await refreshConnectionPath()
         } catch {
-            _ = try? await ssh.request(profile: mac, path: "/v1/devices/\(mac.deviceID)", method: "DELETE", token: mac.credential, body: nil)
-            await ssh.disconnect()
-            throw error
+            _ = try? await iroh.request(profile: mac, path: "/v1/devices/\(mac.deviceID)", method: "DELETE", token: mac.credential, body: nil)
+            await iroh.disconnect(); throw error
         }
-        paired = mac
-        isConnected = true
-        error = nil
+    }
+    func selectConnection(_ mac: PairedMac) async {
+        await perform {
+            var next = connections; next.selectedID = mac.deviceID
+            try persist(next); isConnected = false; connectionPath = ""
+            await ssh.disconnect(); await iroh.disconnect()
+        }
+    }
+    func refreshConnectionPath() async {
+        connectionPath = paired?.iroh != nil ? await iroh.pathDescription() : "SSH · 加密连接"
+    }
+    func terminalStream(generation: String) async throws -> TerminalStream {
+        guard let paired else { throw IrohError.message("请先连接 Mac") }
+        return try await transport(for: paired).terminalStream(profile: paired, generation: generation)
     }
     func forget() async {
         await perform {
-            if let paired { _ = try await request("/v1/devices/\(paired.deviceID)", method: "DELETE") }
-            try Keychain.save("", account: "paired-mac")
-            await ssh.disconnect(); paired = nil; isConnected = false; chatDrafts = [:]; attachmentURLs = [:]
+            if let paired {
+                do { _ = try await request("/v1/devices/\(paired.deviceID)", method: "DELETE") }
+                catch let error as NSError where error.domain == "AgentMux" && error.code == 401 { /* Already revoked. */ }
+                var next = connections
+                next.profiles.removeAll { $0.deviceID == paired.deviceID }
+                next.selectedID = next.profiles.first?.deviceID
+                try persist(next)
+            }
+            await ssh.disconnect(); await iroh.disconnect(); isConnected = false; connectionPath = ""
         }
     }
     func request(_ path: String, method: String = "GET", body: Data? = nil, query: [URLQueryItem] = []) async throws -> Data {
         #if DEBUG
         if InterfacePreview.enabled { isConnected = true; return try InterfacePreview.response(path, method: method) }
         #endif
-        guard let paired else { throw NSError(domain: "AgentMux", code: 1, userInfo: [NSLocalizedDescriptionKey: "请先通过 SSH 连接 Mac"]) }
+        guard let paired else { throw NSError(domain: "AgentMux", code: 1, userInfo: [NSLocalizedDescriptionKey: "请先连接 Mac"]) }
         var url = URLComponents(); url.path = path; url.queryItems = query.isEmpty ? nil : query
         guard let uri = url.string else { throw URLError(.badURL) }
         let response: SSHResponse
         do {
-            response = try await ssh.request(profile: paired, path: uri, method: method, token: paired.credential, body: body)
+            response = try await transport(for: paired).request(profile: paired, path: uri, method: method, token: paired.credential, body: body)
         } catch {
             if !(error is CancellationError) { isConnected = false }
             throw error
